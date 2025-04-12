@@ -1,0 +1,140 @@
+syntax = "proto3";
+
+package can;
+
+option go_package = "github.com/can-dht/proto";
+
+// CAN service defines the operations for a Content Addressable Network node
+service CANService {
+  // Node operations
+  rpc Join(JoinRequest) returns (JoinResponse);
+  rpc Leave(LeaveRequest) returns (LeaveResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+  
+  // Data operations
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  
+  // Routing operations
+  rpc FindNode(FindNodeRequest) returns (FindNodeResponse);
+  rpc UpdateNeighbors(UpdateNeighborsRequest) returns (UpdateNeighborsResponse);
+}
+
+// Point represents a d-dimensional point in the coordinate space
+message Point {
+  repeated double coordinates = 1;
+}
+
+// Zone represents a region in the coordinate space
+message Zone {
+  Point min_point = 1;
+  Point max_point = 2;
+}
+
+// NodeInfo represents information about a node
+message NodeInfo {
+  string id = 1;
+  string address = 2;
+  Zone zone = 3;
+}
+
+// JoinRequest is sent by a node to join the network
+message JoinRequest {
+  string new_node_id = 1;
+  string new_node_address = 2;
+  Point join_point = 3; // Used to determine where in the coordinate space the node joins
+}
+
+// JoinResponse contains information needed by the joining node
+message JoinResponse {
+  bool success = 1;
+  Zone assigned_zone = 2;
+  repeated NodeInfo neighbors = 3;
+  map<string, bytes> data = 4; // Key-value pairs that should be transferred to the new node
+}
+
+// LeaveRequest is sent by a node when it's about to leave the network
+message LeaveRequest {
+  string node_id = 1;
+  map<string, bytes> data = 2; // Key-value pairs that should be transferred to neighbors
+}
+
+// LeaveResponse acknowledges a node's departure
+message LeaveResponse {
+  bool success = 1;
+}
+
+// HeartbeatRequest is sent periodically to check if neighbors are alive
+message HeartbeatRequest {
+  string node_id = 1;
+  int64 timestamp = 2;
+}
+
+// HeartbeatResponse acknowledges a heartbeat
+message HeartbeatResponse {
+  bool success = 1;
+  int64 timestamp = 2;
+}
+
+// PutRequest is sent to store a key-value pair
+message PutRequest {
+  string key = 1;
+  bytes value = 2;
+  bool forward = 3; // Whether this request should be forwarded to the responsible node
+}
+
+// PutResponse acknowledges a successful put operation
+message PutResponse {
+  bool success = 1;
+}
+
+// GetRequest is sent to retrieve a value by key
+message GetRequest {
+  string key = 1;
+  bool forward = 2; // Whether this request should be forwarded to the responsible node
+}
+
+// GetResponse contains the requested value
+message GetResponse {
+  bool success = 1;
+  bytes value = 2;
+  bool exists = 3;
+}
+
+// DeleteRequest is sent to delete a key-value pair
+message DeleteRequest {
+  string key = 1;
+  bool forward = 2; // Whether this request should be forwarded to the responsible node
+}
+
+// DeleteResponse acknowledges a successful delete operation
+message DeleteResponse {
+  bool success = 1;
+  bool existed = 2;
+}
+
+// FindNodeRequest is sent to find the node responsible for a key or point
+message FindNodeRequest {
+  oneof target {
+    string key = 1;
+    Point point = 2;
+  }
+}
+
+// FindNodeResponse contains information about the responsible node
+message FindNodeResponse {
+  bool is_responsible = 1; // True if the responding node is responsible
+  NodeInfo responsible_node = 2; // Information about the responsible node (if not the responding node)
+}
+
+// UpdateNeighborsRequest is sent to update a node's neighbor list
+message UpdateNeighborsRequest {
+  string node_id = 1;
+  repeated NodeInfo neighbors = 2;
+}
+
+// UpdateNeighborsResponse acknowledges the neighbor update
+message UpdateNeighborsResponse {
+  bool success = 1;
+} 
