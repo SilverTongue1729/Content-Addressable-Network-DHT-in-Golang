@@ -1,6 +1,6 @@
 # Content Addressable Network (CAN) Distributed Hash Table (DHT)
 
-Distributed Systems Project, Team 22
+Distributed Systems Project, Team 17
 
 - Keval Jain | 2021111030
 - Romica Raisinghani | 2021101053
