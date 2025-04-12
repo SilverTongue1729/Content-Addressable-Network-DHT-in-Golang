@@ -36,14 +36,15 @@ func main() {
 
 	// Create a test server
 	nodeID := node.NodeID(fmt.Sprintf("test-node-%s", testID))
-	address := fmt.Sprintf("localhost:0") // Use port 0 to avoid conflicts
+	// address := fmt.Sprintf("localhost:0") // Use port 0 to avoid conflicts
+	address := "localhost:0" // Use port 0 to avoid conflicts
 
 	config := service.DefaultCANConfig()
 	config.DataDir = testDataDir
 	config.Dimensions = 2
 
 	log.Printf("Initializing test node with ID %s...", nodeID)
-	server, err := service.NewCANServer(nodeID, address, config)
+	server, err := service.NewCANServer(nodeID, address, &config)
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}

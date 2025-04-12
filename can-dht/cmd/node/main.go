@@ -14,21 +14,39 @@ import (
 	"github.com/can-dht/pkg/node"
 	"github.com/can-dht/pkg/service"
 	"github.com/google/uuid"
+	"google.golang.org/grpc"
 )
 
 var (
-	port             = flag.Int("port", 8080, "Port to listen on")
-	dimensions       = flag.Int("dimensions", 2, "Number of dimensions in the coordinate space")
-	dataDir          = flag.String("data-dir", "data", "Directory for data storage")
-	joinAddress      = flag.String("join", "", "Address of a node to join (leave empty to start a new network)")
-	enableEncryption = flag.Bool("encryption", true, "Enable encryption of stored data")
+	port              = flag.Int("port", 8080, "Port to listen on")
+	dimensions        = flag.Int("dimensions", 2, "Number of dimensions in the coordinate space")
+	dataDir           = flag.String("data-dir", "data", "Directory for data storage")
+	joinAddress       = flag.String("join", "", "Address of a node to join (leave empty to start a new network)")
+	enableEncryption  = flag.Bool("encryption", true, "Enable encryption of stored data")
+	replicationFactor = flag.Int("replication", 1, "Replication factor for fault tolerance")
+	heartbeatInterval = flag.Duration("heartbeat", 5*time.Second, "Heartbeat interval")
+	heartbeatTimeout  = flag.Duration("timeout", 15*time.Second, "Heartbeat timeout")
+	debug             = flag.Bool("debug", false, "Enable debug logging")
+	nodeID            = flag.String("id", "", "Node ID (auto-generated if not provided)")
 )
 
 func main() {
 	flag.Parse()
 
-	// Generate a random node ID
-	nodeID := node.NodeID(uuid.New().String())
+	// Configure logging
+	if *debug {
+		log.SetFlags(log.LstdFlags | log.Lshortfile)
+	} else {
+		log.SetFlags(log.LstdFlags)
+	}
+
+	// Generate or use provided node ID
+	var nodeIdentifier node.NodeID
+	if *nodeID == "" {
+		nodeIdentifier = node.NodeID(uuid.New().String())
+	} else {
+		nodeIdentifier = node.NodeID(*nodeID)
+	}
 
 	// Determine the listen address
 	address := fmt.Sprintf("localhost:%d", *port)
@@ -38,10 +56,13 @@ func main() {
 	config.Dimensions = *dimensions
 	config.DataDir = *dataDir
 	config.EnableEncryption = *enableEncryption
+	config.ReplicationFactor = *replicationFactor
+	config.HeartbeatInterval = *heartbeatInterval
+	config.HeartbeatTimeout = *heartbeatTimeout
 
 	// Initialize the server
-	log.Printf("Initializing CAN node with ID %s...", nodeID)
-	server, err := service.NewCANServer(nodeID, address, config)
+	log.Printf("Initializing CAN node with ID %s...", nodeIdentifier)
+	server, err := service.NewCANServer(nodeIdentifier, address, &config)
 	if err != nil {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
@@ -54,6 +75,24 @@ func main() {
 	// Start the server
 	server.Start()
 	log.Printf("CAN node started on %s", address)
+
+	// Set up a gRPC server
+	grpcServer := grpc.NewServer()
+	server.StartGRPCServer(grpcServer)
+
+	// Set up a listener for the gRPC server
+	lis, err := net.Listen("tcp", address)
+	if err != nil {
+		log.Fatalf("Failed to listen on %s: %v", address, err)
+	}
+
+	// Start the gRPC server in a separate goroutine
+	go func() {
+		log.Printf("gRPC server listening on %s", address)
+		if err := grpcServer.Serve(lis); err != nil {
+			log.Fatalf("Failed to serve gRPC: %v", err)
+		}
+	}()
 
 	// If a join address is provided, attempt to join the network
 	if *joinAddress != "" {
@@ -69,15 +108,13 @@ func main() {
 		log.Printf("Starting a new CAN network")
 	}
 
-	// Set up a listener for the gRPC server
-	_, err = net.Listen("tcp", address)
-	if err != nil {
-		log.Fatalf("Failed to listen on %s: %v", address, err)
-	}
-
-	// NOTE: In a real implementation, we would start a gRPC server using the listener
-	// For now, we'll just keep the program running until it receives a signal
-	log.Printf("Listening on %s (gRPC server not implemented yet)", address)
+	// Print node information
+	log.Printf("Node Information:")
+	log.Printf("- ID: %s", nodeIdentifier)
+	log.Printf("- Address: %s", address)
+	log.Printf("- Dimensions: %d", *dimensions)
+	log.Printf("- Replication Factor: %d", *replicationFactor)
+	log.Printf("- Encryption: %v", *enableEncryption)
 
 	// Wait for interruption signal
 	sigCh := make(chan os.Signal, 1)
@@ -85,6 +122,9 @@ func main() {
 	sig := <-sigCh
 
 	log.Printf("Received signal %v, shutting down...", sig)
+
+	// Gracefully stop the gRPC server
+	grpcServer.GracefulStop()
 
 	// Gracefully leave the network if possible
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
