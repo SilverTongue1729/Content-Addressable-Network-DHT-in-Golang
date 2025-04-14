@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	// "net"
 	"sync"
 	"time"
 
@@ -729,3 +730,17 @@ func (s *CANServer) Delete(ctx context.Context, key string) error {
 
 	return nil
 }
+
+// // StartServer starts the gRPC server
+// func (s *CANServer) StartServer(address string) error {
+// 	lis, err := net.Listen("tcp", address)
+// 	if err != nil {
+// 		return fmt.Errorf("failed to listen: %w", err)
+// 	}
+
+// 	grpcServer := grpc.NewServer()
+// 	pb.RegisterCANServiceServer(grpcServer, s)
+
+// 	log.Printf("CAN DHT node starting on %s", address)
+// 	return grpcServer.Serve(lis)
+// }

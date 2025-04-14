@@ -93,6 +93,71 @@ This implementation follows an incremental approach, starting with core features
    - Advanced caching strategies
    - Protocol optimizations
 
+## Security Features
+
+The CAN DHT implementation includes several security features to protect stored data:
+
+### Data Encryption
+
+Values stored in the DHT are encrypted using AES-GCM (Galois/Counter Mode), which provides both confidentiality and integrity verification:
+
+- **Values are encrypted**: The actual content of key-value pairs is encrypted before storage
+- **Keys are not encrypted**: Keys are hashed to determine their location in the coordinate space
+- **Data Integrity**: The AES-GCM mode provides built-in authentication to protect against tampering
+
+### Usage Example
+
+```go
+// Enable encryption in the configuration
+config := &CANConfig{
+    EnableEncryption: true,
+    // other config options...
+}
+
+// Create a CAN server with encryption enabled
+server, err := NewCANServer("node1", "localhost:8080", config)
+if err != nil {
+    log.Fatalf("Failed to create server: %v", err)
+}
+
+// Store data securely
+ctx := context.Background()
+err = server.SecurePut(ctx, "user123", []byte("sensitive_data"))
+if err != nil {
+    log.Fatalf("Failed to store data: %v", err)
+}
+
+// Retrieve and decrypt data
+data, err := server.SecureGet(ctx, "user123")
+if err != nil {
+    log.Fatalf("Failed to retrieve data: %v", err)
+}
+fmt.Printf("Retrieved: %s\n", string(data))
+```
+
+### How It Works
+
+1. **Encryption Process (PUT operation)**:
+   - A random encryption key is generated when the node starts
+   - For each value to be stored, the value is encrypted using AES-GCM
+   - A random nonce (number used once) is generated for each encryption
+   - The nonce is stored with the ciphertext
+   - An HMAC is generated for integrity verification
+   - The ciphertext, nonce, and HMAC are serialized and stored
+
+2. **Decryption Process (GET operation)**:
+   - The serialized data is retrieved from storage
+   - The ciphertext, nonce, and HMAC are extracted
+   - The HMAC is verified to ensure data integrity
+   - If verification passes, the data is decrypted using AES-GCM
+   - The decrypted plaintext is returned
+
+### Security Guarantees
+
+- **Confidentiality**: Even if an attacker gains access to the stored data, they cannot read the values without the encryption key
+- **Integrity**: Any tampering with the encrypted data will be detected during decryption
+- **Authentication**: The HMAC ensures that only authorized entities can modify the data
+
 ## Building and Running
 
 ### Prerequisites
