@@ -176,18 +176,36 @@ func (n *Node) Split() (*Zone, error) {
 		return nil, fmt.Errorf("failed to split zone: %w", err)
 	}
 
-	// Reassign data to the new node based on the new zones
-	keysToRemove := make([]string, 0)
+	// Create a map to store keys that should be moved to the new zone
+	keysToMove := make([]string, 0)
+	
+	// For each key in our data store
 	for key := range n.Data {
-		// This is a simplification - in a real implementation, we would hash the key
-		// to a point in the coordinate space and check which zone it falls into
-		// For now, we'll just reallocate keys randomly
-		if len(key)%2 == 0 { // Simple way to split data
-			keysToRemove = append(keysToRemove, key)
+		// Hash the key to get a point in the coordinate space
+		// For simplicity, we'll use a simple hash function that maps to [0,1] range
+		// In a real implementation, this would be a proper consistent hash function
+		hashValue := float64(len(key)) / 100.0 // Simple hash for testing
+		
+		// Create a point in the coordinate space
+		point := make(Point, n.Dimensions)
+		for i := 0; i < n.Dimensions; i++ {
+			if i == maxDim {
+				// Use the hash value for the splitting dimension
+				point[i] = hashValue
+			} else {
+				// For other dimensions, use a value in the middle of the zone
+				point[i] = (n.Zone.MinPoint[i] + n.Zone.MaxPoint[i]) / 2
+			}
+		}
+		
+		// Check if the point belongs to the new zone
+		if newNodeZone.Contains(point) {
+			keysToMove = append(keysToMove, key)
 		}
 	}
-
-	for _, key := range keysToRemove {
+	
+	// Remove the keys that belong to the new zone
+	for _, key := range keysToMove {
 		delete(n.Data, key)
 	}
 
