@@ -159,6 +159,28 @@ func (s *Store) Get(key string) ([]byte, bool, error) {
 	return value, exists, nil
 }
 
+// GetAllKeys returns all keys in the store
+func (s *Store) GetAllKeys() ([]string, error) {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+
+	var keys []string
+	err := s.db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		it := txn.NewIterator(opts)
+		defer it.Close()
+
+		for it.Rewind(); it.Valid(); it.Next() {
+			item := it.Item()
+			key := string(item.Key())
+			keys = append(keys, key)
+		}
+		return nil
+	})
+
+	return keys, err
+}
+
 // Delete removes a key-value pair
 func (s *Store) Delete(key string) error {
 	// Remove from cache

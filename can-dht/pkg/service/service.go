@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+
 	// "net"
 	"sync"
 	"time"
 
 	"github.com/can-dht/pkg/crypto"
+	"github.com/can-dht/pkg/integrity"
 	"github.com/can-dht/pkg/node"
 	"github.com/can-dht/pkg/routing"
 	"github.com/can-dht/pkg/storage"
@@ -41,6 +43,9 @@ type CANServer struct {
 	// LoadStats tracks load statistics for load balancing
 	LoadStats *LoadStats
 
+	// IntegrityChecker performs periodic integrity checks
+	IntegrityChecker *integrity.PeriodicChecker
+
 	mu sync.RWMutex
 }
 
@@ -58,17 +63,20 @@ type CANConfig struct {
 	HeartbeatInterval time.Duration
 	// Timeout for considering a node dead
 	HeartbeatTimeout time.Duration
+	// Interval between integrity checks (0 = disabled)
+	IntegrityCheckInterval time.Duration
 }
 
 // DefaultCANConfig returns a default configuration
 func DefaultCANConfig() CANConfig {
 	return CANConfig{
-		Dimensions:        2,
-		DataDir:           "data",
-		EnableEncryption:  true,
-		ReplicationFactor: 1,
-		HeartbeatInterval: 5 * time.Second,
-		HeartbeatTimeout:  15 * time.Second,
+		Dimensions:             2,
+		DataDir:                "data",
+		EnableEncryption:       true,
+		ReplicationFactor:      1,
+		HeartbeatInterval:      5 * time.Second,
+		HeartbeatTimeout:       15 * time.Second,
+		IntegrityCheckInterval: 1 * time.Hour, // Default to hourly checks
 	}
 }
 
@@ -110,19 +118,91 @@ func NewCANServer(nodeID node.NodeID, address string, config *CANConfig) (*CANSe
 		}
 	}
 
-	return &CANServer{
+	server := &CANServer{
 		Node:       localNode,
 		Router:     router,
 		Store:      store,
 		KeyManager: keyManager,
 		Config:     config,
-	}, nil
+	}
+
+	// Initialize the integrity checker if interval is non-zero
+	if config.IntegrityCheckInterval > 0 {
+		server.initIntegrityChecker()
+	}
+
+	return server, nil
+}
+
+// initIntegrityChecker initializes the integrity checker
+func (s *CANServer) initIntegrityChecker() {
+	if s.KeyManager == nil {
+		// No integrity checker needed if encryption is disabled
+		return
+	}
+
+	s.IntegrityChecker = integrity.NewPeriodicChecker(s.Store, s.KeyManager, s.Config.IntegrityCheckInterval)
+
+	// Custom handler for corruption events
+	s.IntegrityChecker.OnCorruptionFound = func(key string, result *integrity.CheckResult) {
+		log.Printf("Data corruption detected for key %s: %v", key, result.Error)
+
+		if result.RepairedOK {
+			log.Printf("Successfully repaired corrupted data for key %s from replica", key)
+		} else {
+			// If we couldn't repair locally, try to get from other nodes
+			log.Printf("Local repair failed for key %s, attempting to retrieve from network", key)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			// Try to retrieve from network
+			if s.Config.ReplicationFactor > 1 {
+				if err := s.RecoverCorruptedData(ctx, key); err != nil {
+					log.Printf("Network recovery failed for key %s: %v", key, err)
+				} else {
+					log.Printf("Successfully recovered corrupted data for key %s from network", key)
+				}
+			}
+		}
+	}
+
+	// Custom handler for check completion
+	s.IntegrityChecker.OnCheckCompleted = func(stats *integrity.IntegrityStats) {
+		log.Printf("Integrity check completed: %d total, %d corrupted, %d repaired, %d unrepaired",
+			stats.TotalChecks, stats.CorruptedData, stats.RepairedData, stats.UnrepairedData)
+	}
+}
+
+// RecoverCorruptedData attempts to recover corrupted data from other nodes in the network
+func (s *CANServer) RecoverCorruptedData(ctx context.Context, key string) error {
+	// This is a simplified implementation
+	// In a real system, you would:
+	// 1. Find nodes that might have replicas of this data
+	// 2. Query those nodes for the data
+	// 3. Verify the integrity of retrieved data
+	// 4. Store the valid data locally
+
+	// For now, we'll just try to get the data from the network as a normal GET
+	_, err := s.Get(ctx, key)
+	if err != nil {
+		return fmt.Errorf("failed to recover data: %w", err)
+	}
+
+	// If we got here, the data was successfully retrieved and is already stored locally
+	log.Printf("Successfully recovered data for key %s from network", key)
+	return nil
 }
 
 // Start starts the CAN server
 func (s *CANServer) Start() {
 	// Start the heartbeat process
 	go s.startHeartbeatProcess()
+
+	// Start the integrity checker if configured
+	if s.IntegrityChecker != nil {
+		log.Printf("Starting periodic integrity checks with interval %v", s.Config.IntegrityCheckInterval)
+		s.IntegrityChecker.Start()
+	}
 }
 
 // StartGRPCServer starts the gRPC server
@@ -136,6 +216,11 @@ func (s *CANServer) StartGRPCServer(grpcServer *grpc.Server) {
 
 // Stop stops the CAN server
 func (s *CANServer) Stop() error {
+	// Stop the integrity checker if running
+	if s.IntegrityChecker != nil {
+		s.IntegrityChecker.Stop()
+	}
+
 	return s.Store.Close()
 }
 

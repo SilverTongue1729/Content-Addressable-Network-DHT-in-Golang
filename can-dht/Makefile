@@ -102,3 +102,13 @@ help:
 	@echo "  clean          : Remove build and test artifacts"
 	@echo "  deps           : Fetch dependencies"
 	@echo "  help           : Show this help message"
+
+.PHONY: demo-integrity
+demo-integrity: build
+	@echo "Running integrity demo..."
+	./bin/integrity-demo
+
+.PHONY: demo-cache
+demo-cache: build
+	@echo "Running cache demo..."
+	@go run ./cmd/cache-demo/main.go
