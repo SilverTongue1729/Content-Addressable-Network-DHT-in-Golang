@@ -406,3 +406,31 @@ func (s *GRPCServer) UpdateNeighbors(ctx context.Context, req *pb.UpdateNeighbor
 		Success: true,
 	}, nil
 }
+
+// Takeover handles takeover messages for coordinating failure recovery
+func (s *GRPCServer) Takeover(ctx context.Context, req *pb.TakeoverRequest) (*pb.TakeoverResponse, error) {
+	failedNodeID := node.NodeID(req.FailedNodeId)
+	senderNodeID := node.NodeID(req.SenderNodeId)
+	senderZoneVolume := req.ZoneVolume
+
+	// Get failed node's zone
+	var failedZone *node.Zone
+	if req.FailedZone != nil {
+		var err error
+		failedZone, err = node.NewZone(
+			node.Point(req.FailedZone.MinPoint.Coordinates),
+			node.Point(req.FailedZone.MaxPoint.Coordinates),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid zone in takeover request: %w", err)
+		}
+	}
+
+	// Process the takeover message in the CAN server
+	acceptTakeover, ourVolume := s.canServer.ProcessTakeoverMessage(ctx, failedNodeID, senderNodeID, senderZoneVolume, failedZone)
+
+	return &pb.TakeoverResponse{
+		AcceptTakeover:      acceptTakeover,
+		ResponderZoneVolume: ourVolume,
+	}, nil
+}

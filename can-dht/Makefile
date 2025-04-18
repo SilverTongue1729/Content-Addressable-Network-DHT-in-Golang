@@ -6,6 +6,7 @@ TEST_DATA_DIR = test-data
 NODE_BINARY = $(BINARY_DIR)/can-node
 TEST_CLIENT_BINARY = $(BINARY_DIR)/test-client
 GO = go
+PROTOC = protoc
 
 # Default target
 .PHONY: all
@@ -13,7 +14,15 @@ all: build
 
 # Build targets
 .PHONY: build
-build: build-node build-test-client
+build: proto build-node build-test-client
+
+.PHONY: proto
+proto:
+	@echo "Generating proto files..."
+	@mkdir -p proto
+	@$(PROTOC) --go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		proto/*.proto
 
 .PHONY: build-node
 build-node:
@@ -91,6 +100,7 @@ help:
 	@echo "Available targets:"
 	@echo "  all            : Build all binaries (default target)"
 	@echo "  build          : Build node and test client binaries"
+	@echo "  proto          : Generate code from proto files"
 	@echo "  build-node     : Build only the node binary"
 	@echo "  build-test-client : Build only the test client binary"
 	@echo "  test           : Run the test client"
