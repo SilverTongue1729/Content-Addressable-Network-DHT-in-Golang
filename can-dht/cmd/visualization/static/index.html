@@ -1,0 +1,1550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CAN DHT Visualization</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            margin: 0;
+            padding: 0;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        
+        .encrypted-pill {
+            display: inline-block;
+            background-color: #28a745;
+            color: white;
+            font-size: 8px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: 3px;
+            vertical-align: middle;
+        }
+        
+        .replica-pill {
+            display: inline-block;
+            background-color: #6c757d;
+            color: white;
+            font-size: 8px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: 3px;
+            vertical-align: middle;
+        }
+        
+        .replica-link {
+            stroke: #6c757d;
+            stroke-width: 1.5;
+            stroke-dasharray: 4;
+            pointer-events: none;
+        }
+        
+        h1 {
+            color: #343a40;
+            text-align: center;
+            margin-top: 20px;
+            margin-bottom: 20px;
+        }
+        
+        #visualization {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        /* Legend styles */
+        .legend {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+            font-size: 12px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin-bottom: 5px;
+        }
+        
+        .legend-color {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 5px;
+        }
+        
+        .legend-label {
+            font-size: 11px;
+        }
+        
+        #controls {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .control-group {
+            margin-bottom: 15px;
+        }
+        
+        button {
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .tooltip {
+            position: absolute;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        
+        .node-label {
+            font-size: 12px;
+            text-anchor: middle;
+            fill: #343a40;
+            pointer-events: none;
+        }
+        
+        /* Key label styles */
+        .key-text-bg {
+            fill: rgba(255, 255, 255, 0.7);
+            rx: 3;
+            ry: 3;
+        }
+        
+        .key-text {
+            dominant-baseline: middle;
+            pointer-events: none;
+        }
+        
+        /* Information panel styles */
+        #info-panel {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+        
+        .info-title {
+            font-size: 16px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .info-content {
+            font-size: 14px;
+            line-height: 1.5;
+        }
+        
+        /* Key-value operation form */
+        #kv-operations {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1>Content Addressable Network (CAN) DHT Visualization</h1>
+        
+        <div class="row">
+            <div class="col-md-8">
+                <!-- Visualization Area -->
+                <div id="visualization"></div>
+                
+                <!-- Controls -->
+                <div id="controls" class="mt-3">
+                    <div class="control-group">
+                        <h5>Network Operations</h5>
+                        <button id="preview-join-btn" class="btn btn-outline-primary">Preview Join Point</button>
+                        <button id="add-node-btn" class="btn btn-primary">Add Node</button>
+                        <button id="reset-btn" class="btn btn-warning">Reset Simulation</button>
+                    </div>
+                    <div class="control-group">
+                        <h5>Replication Settings</h5>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <div class="input-group">
+                                    <span class="input-group-text">Default Factor</span>
+                                    <input type="number" id="replication-factor" class="form-control" min="1" max="5" value="1">
+                                    <button id="set-replication-btn" class="btn btn-secondary">Set</button>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="form-text">
+                                    Number of copies (including primary) to maintain for new keys
+                                </div>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-md-5">
+                                <div class="input-group">
+                                    <span class="input-group-text">Replicate Key</span>
+                                    <input type="text" id="replicate-key-input" class="form-control" placeholder="Enter key name">
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="input-group">
+                                    <span class="input-group-text">Copies</span>
+                                    <input type="number" id="key-replication-factor" class="form-control" min="1" max="5" value="2">
+                                    <button id="replicate-key-btn" class="btn btn-info">Replicate</button>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <div class="form-text">
+                                    Replicate a specific key
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <h5>Key-Value Operations</h5>
+                        <div class="row mb-3">
+                            <div class="col-md-12">
+                                <h6>PUT Operation</h6>
+                            </div>
+                            <div class="col-md-3">
+                                <input type="text" id="put-key-input" class="form-control mb-2" placeholder="Key">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="text" id="put-value-input" class="form-control mb-2" placeholder="Value">
+                            </div>
+                            <div class="col-md-3">
+                                <div class="form-check mt-2">
+                                    <input class="form-check-input" type="checkbox" id="encrypt-checkbox">
+                                    <label class="form-check-label" for="encrypt-checkbox">
+                                        Encrypt
+                                    </label>
+                                </div>
+                            </div>
+                            <div class="col-md-3">
+                                <button id="put-btn" class="btn btn-success">PUT</button>
+                            </div>
+                        </div>
+                        
+                        <div class="row">
+                            <div class="col-md-12">
+                                <h6>GET & DELETE Operations</h6>
+                            </div>
+                            <div class="col-md-6">
+                                <input type="text" id="get-key-input" class="form-control mb-2" placeholder="Key">
+                            </div>
+                            <div class="col-md-6">
+                                <button id="get-btn" class="btn btn-info">GET</button>
+                                <button id="delete-btn" class="btn btn-danger">DELETE</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="col-md-4">
+                <!-- Information Panel -->
+                <div id="info-panel">
+                    <div class="info-title">System Information</div>
+                    <div class="info-content">
+                        <div>Nodes: <span id="node-count">0</span></div>
+                        <div>Key-Value Pairs: <span id="kv-count">0</span></div>
+                        <div class="mt-3">Last Action:</div>
+                        <div id="last-action">None</div>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="info-title">Selected Entity Info</div>
+                    <div id="selected-info" class="info-content">
+                        <em>Click on a node or key-value pair for details</em>
+                    </div>
+                    
+                    <hr>
+                    
+                    <div class="info-title">CAN DHT Explanation</div>
+                    <div class="info-content">
+                        <p>A Content Addressable Network (CAN) is a distributed hash table that maps keys to values in a multi-dimensional coordinate space.</p>
+                        <p><strong>Nodes:</strong> Each node owns a zone in the coordinate space.</p>
+                        <p><strong>Key-Value Pairs:</strong> Keys are hashed to coordinate points and stored on the responsible node.</p>
+                        <p><strong>Routing:</strong> Requests are routed through neighbors based on their proximity to the target point.</p>
+                        <p><strong>Node Joining:</strong> When a new node joins, it:</p>
+                        <ol style="padding-left: 20px; margin-top: 0;">
+                            <li>Picks a random point in the space (yellow flash)</li>
+                            <li>The node owning that point splits its zone</li>
+                            <li>The new node takes one half of the split zone</li>
+                            <li>Key-value pairs are redistributed accordingly</li>
+                        </ol>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Tooltip -->
+    <div id="tooltip" class="tooltip"></div>
+    
+    <script>
+        // Configuration
+        const config = {
+            width: 800,
+            height: 600,
+            padding: 40,
+            refreshInterval: 1000, // ms
+            nodeRadius: 8,
+            keyRadius: 8, // Increased size
+            replicaKeyRadius: 6, // Slightly smaller for replicas
+            pathDuration: 5000, // ms
+            primaryStroke: "#000", // Black stroke for primary keys
+            replicaStroke: "#6c757d", // Gray stroke for replicas
+            primaryStrokeWidth: 2, // Thicker stroke for primary
+            replicaStrokeWidth: 1.5 // Thinner stroke for replicas
+        };
+        
+        // State
+        let state = {
+            nodes: [],
+            keyValuePairs: [],
+            routingPaths: [],
+            selectedEntity: null,
+            joinPoints: {}, // Track join points by node ID
+            replicationFactor: 1, // Current replication factor
+        };
+        
+        // Create SVG element
+        const svg = d3.select("#visualization")
+            .append("svg")
+            .attr("width", config.width)
+            .attr("height", config.height);
+        
+        // Create a group for zones
+        const zonesGroup = svg.append("g").attr("class", "zones");
+        
+        // Create a group for routing paths
+        const pathsGroup = svg.append("g").attr("class", "paths");
+        
+        // Create a group for nodes
+        const nodesGroup = svg.append("g").attr("class", "nodes");
+        
+        // Create a group for key-value pairs
+        const keysGroup = svg.append("g").attr("class", "keys");
+        
+        // Add legend
+        const legend = svg.append("g")
+            .attr("class", "legend")
+            .attr("transform", `translate(${config.width - 120}, 20)`);
+            
+        legend.append("rect")
+            .attr("width", 110)
+            .attr("height", 85)
+            .attr("fill", "rgba(255, 255, 255, 0.9)")
+            .attr("rx", 4)
+            .attr("ry", 4)
+            .attr("stroke", "#ddd")
+            .attr("stroke-width", 1);
+            
+        // Legend title
+        legend.append("text")
+            .attr("x", 55)
+            .attr("y", 20)
+            .attr("text-anchor", "middle")
+            .attr("font-size", "12px")
+            .attr("font-weight", "bold")
+            .text("Legend");
+            
+        // Primary key
+        const primaryLegend = legend.append("g").attr("transform", "translate(10, 35)");
+        primaryLegend.append("circle")
+            .attr("r", 6)
+            .attr("fill", "#ff5733")
+            .attr("stroke", config.primaryStroke)
+            .attr("stroke-width", config.primaryStrokeWidth);
+        primaryLegend.append("text")
+            .attr("x", 15)
+            .attr("y", 4)
+            .attr("font-size", "11px")
+            .text("Primary Key");
+            
+        // Replica key
+        const replicaLegend = legend.append("g").attr("transform", "translate(10, 55)");
+        replicaLegend.append("circle")
+            .attr("r", 5)
+            .attr("fill", "#ff5733")
+            .attr("stroke", config.replicaStroke)
+            .attr("stroke-width", config.replicaStrokeWidth)
+            .attr("opacity", 0.7);
+        replicaLegend.append("text")
+            .attr("x", 15)
+            .attr("y", 4)
+            .attr("font-size", "11px")
+            .text("Replica Key");
+            
+        // Replication link
+        const linkLegend = legend.append("g").attr("transform", "translate(10, 75)");
+        linkLegend.append("line")
+            .attr("x1", 0)
+            .attr("y1", 0)
+            .attr("x2", 12)
+            .attr("y2", 0)
+            .attr("stroke", "#6c757d")
+            .attr("stroke-width", 1.5)
+            .attr("stroke-dasharray", "3");
+        linkLegend.append("text")
+            .attr("x", 15)
+            .attr("y", 4)
+            .attr("font-size", "11px")
+            .text("Replica Link");
+        
+        // Create coordinate axes
+        const xAxis = d3.scaleLinear()
+            .domain([0, 1])
+            .range([config.padding, config.width - config.padding]);
+        
+        const yAxis = d3.scaleLinear()
+            .domain([0, 1])
+            .range([config.height - config.padding, config.padding]);
+        
+        // Add X axis
+        svg.append("g")
+            .attr("transform", `translate(0,${config.height - config.padding})`)
+            .call(d3.axisBottom(xAxis).ticks(10));
+        
+        // Add Y axis
+        svg.append("g")
+            .attr("transform", `translate(${config.padding},0)`)
+            .call(d3.axisLeft(yAxis).ticks(10));
+        
+        // Tooltip
+        const tooltip = d3.select("#tooltip");
+        
+        // Fetch state from server
+        function fetchState() {
+            fetch("/api/state")
+                .then(response => response.json())
+                .then(data => {
+                    // ===== EXTENSIVE DEBUGGING =====
+                    console.log("========= RECEIVED STATE DATA =========");
+                    console.log(`Total nodes: ${data.nodes.length}`);
+                    console.log(`Total key-value pairs: ${data.keyValuePairs.length}`);
+                    
+                    // Debug: Print all key-value pairs
+                    console.log("KEY-VALUE PAIRS RECEIVED FROM SERVER:");
+                    data.keyValuePairs.forEach((kv, index) => {
+                        const type = kv.IsPrimaryCopy ? "PRIMARY" : "REPLICA";
+                        console.log(`[${index}] ${type} KEY: ${kv.Key}, Value: ${kv.Value}, Node: ${kv.NodeID}, Point: (${kv.Point[0].toFixed(3)}, ${kv.Point[1].toFixed(3)})`);
+                        
+                        if (kv.IsPrimaryCopy && kv.ReplicaNodes && kv.ReplicaNodes.length > 0) {
+                            console.log(`   Has ${kv.ReplicaNodes.length} replica(s): ${kv.ReplicaNodes.join(', ')}`);
+                        }
+                    });
+                    
+                    // Store the data in state
+                    state.nodes = data.nodes;
+                    state.keyValuePairs = data.keyValuePairs;
+                    state.routingPaths = data.routingPaths;
+                    state.replicationFactor = data.replicationFactor || 1;
+                    
+                    // Log primary vs replica counts
+                    const primaryKeys = state.keyValuePairs.filter(kv => kv.IsPrimaryCopy);
+                    const replicaKeys = state.keyValuePairs.filter(kv => !kv.IsPrimaryCopy);
+                    
+                    console.log(`SUMMARY: ${primaryKeys.length} primary keys, ${replicaKeys.length} replica keys`);
+                    
+                    if (replicaKeys.length > 0) {
+                        console.log("REPLICA KEYS FOUND:");
+                        replicaKeys.forEach((kv, idx) => {
+                            console.log(`  [${idx}] Key: ${kv.Key}, Node: ${kv.NodeID}, Point: (${kv.Point[0].toFixed(3)}, ${kv.Point[1].toFixed(3)})`);
+                        });
+                    } else {
+                        console.log("WARNING: NO REPLICA KEYS FOUND!");
+                    }
+                    console.log("======================================");
+
+                    // Update visualization with the new data
+                    updateVisualization();
+                    updateInfoPanel();
+                })
+                .catch(error => console.error("Error fetching state:", error));
+        }
+        
+        // Update the visualization based on current state
+        function updateVisualization() {
+            console.log("Updating visualization with:", state.keyValuePairs.length, "key-value pairs");
+            
+            // Debug: Print key-value pairs used for visualization
+            const primaries = state.keyValuePairs.filter(kv => kv.IsPrimaryCopy).length;
+            const replicas = state.keyValuePairs.filter(kv => !kv.IsPrimaryCopy).length;
+            console.log(`Visualizing: ${primaries} primary keys and ${replicas} replica keys`);
+            
+            // Clear any existing paths first to ensure old paths don't persist
+            pathsGroup.selectAll(".routing-path").remove();
+            pathsGroup.selectAll("path[marker-end='url(#arrow)']").remove();
+            
+            // Update zones
+            const zones = zonesGroup.selectAll(".zone")
+                .data(state.nodes, d => d.id);
+            
+            zones.exit().remove();
+            
+            const newZones = zones.enter()
+                .append("rect")
+                .attr("class", "zone");
+            
+            zones.merge(newZones)
+                .attr("x", d => xAxis(d.zone.MinPoint[0]))
+                .attr("y", d => yAxis(d.zone.MaxPoint[1]))
+                .attr("width", d => xAxis(d.zone.MaxPoint[0]) - xAxis(d.zone.MinPoint[0]))
+                .attr("height", d => yAxis(d.zone.MinPoint[1]) - yAxis(d.zone.MaxPoint[1]))
+                .attr("fill", "none")
+                .attr("stroke", "#007BFF")
+                .attr("stroke-width", 2)
+                .attr("opacity", 0.7)
+                .on("mouseover", function(event, d) {
+                    d3.select(this).attr("stroke", "#0056b3").attr("stroke-width", 3);
+                    showTooltip(event, `Node: ${d.id}<br>Zone: (${d.zone.MinPoint[0].toFixed(2)},${d.zone.MinPoint[1].toFixed(2)}) to (${d.zone.MaxPoint[0].toFixed(2)},${d.zone.MaxPoint[1].toFixed(2)})`);
+                })
+                .on("mouseout", function() {
+                    d3.select(this).attr("stroke", "#007BFF").attr("stroke-width", 2);
+                    hideTooltip();
+                })
+                .on("click", function(event, d) {
+                    selectEntity({ type: "node", data: d });
+                });
+            
+            // Update nodes
+            const nodes = nodesGroup.selectAll(".node")
+                .data(state.nodes, d => d.id);
+            
+            nodes.exit().remove();
+            
+            const newNodes = nodes.enter()
+                .append("circle")
+                .attr("class", "node");
+            
+            nodes.merge(newNodes)
+                .attr("cx", d => xAxis((d.zone.MinPoint[0] + d.zone.MaxPoint[0]) / 2))
+                .attr("cy", d => yAxis((d.zone.MinPoint[1] + d.zone.MaxPoint[1]) / 2))
+                .attr("r", config.nodeRadius)
+                .attr("fill", "#007BFF")
+                .attr("stroke", "#fff")
+                .attr("stroke-width", 2)
+                .on("mouseover", function(event, d) {
+                    d3.select(this).attr("r", config.nodeRadius * 1.2);
+                    showTooltip(event, `Node: ${d.id}`);
+                })
+                .on("mouseout", function() {
+                    d3.select(this).attr("r", config.nodeRadius);
+                    hideTooltip();
+                })
+                .on("click", function(event, d) {
+                    selectEntity({ type: "node", data: d });
+                });
+            
+            // Update node labels
+            const nodeLabels = nodesGroup.selectAll(".node-label")
+                .data(state.nodes, d => d.id);
+            
+            nodeLabels.exit().remove();
+            
+            const newNodeLabels = nodeLabels.enter()
+                .append("text")
+                .attr("class", "node-label");
+            
+            nodeLabels.merge(newNodeLabels)
+                .attr("x", d => xAxis((d.zone.MinPoint[0] + d.zone.MaxPoint[0]) / 2))
+                .attr("y", d => yAxis((d.zone.MinPoint[1] + d.zone.MaxPoint[1]) / 2) - config.nodeRadius - 5)
+                .text(d => d.id)
+                .attr("text-anchor", "middle");
+            
+            // Update key-value pairs
+            console.log("Rendering key-value pairs...");
+            const keys = keysGroup.selectAll(".key")
+                .data(state.keyValuePairs, d => d.Key + (d.IsPrimaryCopy ? "" : "_replica_" + d.NodeID));
+            
+            const exitingKeys = keys.exit();
+            console.log(`Removing ${exitingKeys.size()} old keys`);
+            exitingKeys.remove();
+            
+            const newKeys = keys.enter()
+                .append("circle")
+                .attr("class", d => d.IsPrimaryCopy ? "key primary" : "key replica");
+            
+            console.log(`Adding ${newKeys.size()} new keys`);
+            
+            // Helper function to darken a color for replicas
+            function adjustReplicaColor(color) {
+                // Try to parse the color
+                const hexMatch = color.match(/^#([0-9a-f]{6})$/i);
+                if (hexMatch) {
+                    // It's a hex color, darken it
+                    const hex = hexMatch[1];
+                    const r = parseInt(hex.slice(0, 2), 16);
+                    const g = parseInt(hex.slice(2, 4), 16);
+                    const b = parseInt(hex.slice(4, 6), 16);
+                    
+                    // Darken by 30%
+                    const darkenFactor = 0.7;
+                    const dr = Math.floor(r * darkenFactor);
+                    const dg = Math.floor(g * darkenFactor);
+                    const db = Math.floor(b * darkenFactor);
+                    
+                    return `#${dr.toString(16).padStart(2, '0')}${dg.toString(16).padStart(2, '0')}${db.toString(16).padStart(2, '0')}`;
+                }
+                return color; // Return unchanged if not a hex color
+            }
+            
+            keys.merge(newKeys)
+                .attr("cx", d => xAxis(d.Point[0]))
+                .attr("cy", d => yAxis(d.Point[1]))
+                .attr("r", d => d.IsPrimaryCopy ? config.keyRadius : config.replicaKeyRadius)
+                .attr("fill", d => d.IsPrimaryCopy ? d.Color : adjustReplicaColor(d.Color))
+                .attr("stroke", d => d.IsPrimaryCopy ? config.primaryStroke : config.replicaStroke)
+                .attr("stroke-width", d => d.IsPrimaryCopy ? config.primaryStrokeWidth : config.replicaStrokeWidth)
+                .style("opacity", d => d.IsPrimaryCopy ? 1 : 0.9)
+                .on("mouseover", function(event, d) {
+                    d3.select(this).attr("r", d.IsPrimaryCopy ? config.keyRadius * 1.5 : config.replicaKeyRadius * 1.5);
+                    let tooltipText = `Key: ${d.Key}<br>Value: ${d.Value}`;
+                    if (d.Encrypted) {
+                        tooltipText += '<br><span class="encrypted-pill">ENCRYPTED</span>';
+                    }
+                    if (!d.IsPrimaryCopy) {
+                        tooltipText += '<br><span class="replica-pill">REPLICA</span>';
+                        tooltipText += `<br>Primary Node: ${d.ReplicaOf || "Unknown"}`;
+                        tooltipText += `<br>Stored on Node: ${d.NodeID}`;
+                    } else if (d.ReplicaNodes && d.ReplicaNodes.length > 0) {
+                        tooltipText += `<br>Replicated to ${d.ReplicaNodes.length} node(s)`;
+                        tooltipText += `<br>Replica Nodes: ${d.ReplicaNodes.join(", ")}`;
+                    }
+                    showTooltip(event, tooltipText);
+                })
+                .on("mouseout", function(event, d) {
+                    d3.select(this).attr("r", d.IsPrimaryCopy ? config.keyRadius : config.replicaKeyRadius);
+                    hideTooltip();
+                })
+                .on("click", function(event, d) {
+                    selectEntity({ type: "keyValue", data: d });
+                });
+            
+            // Add pulsing animation to newly added replica keys
+            newKeys.filter(d => !d.IsPrimaryCopy)
+                .style("opacity", 0.3)
+                .transition()
+                .duration(500)
+                .style("opacity", 1)
+                .attr("r", config.replicaKeyRadius * 2)
+                .transition()
+                .duration(500)
+                .attr("r", config.replicaKeyRadius)
+                .style("opacity", 0.9);
+            
+            // Add replication links between primary and replica nodes
+            if (state.replicationFactor > 1) {
+                // Remove any existing links
+                pathsGroup.selectAll(".replica-link").remove();
+                
+                // Create links for each primary copy that has replicas
+                state.keyValuePairs.filter(kv => kv.IsPrimaryCopy && kv.ReplicaNodes && kv.ReplicaNodes.length > 0).forEach(primaryKV => {
+                    // Find primary key point
+                    const primaryPoint = {
+                        x: xAxis(primaryKV.Point[0]),
+                        y: yAxis(primaryKV.Point[1])
+                    };
+                    
+                    // Find all replicas of this key
+                    const replicas = state.keyValuePairs.filter(kv => 
+                        !kv.IsPrimaryCopy && 
+                        kv.Key === primaryKV.Key);
+                    
+                    // Draw line to each replica
+                    replicas.forEach(replicaKV => {
+                        const replicaPoint = {
+                            x: xAxis(replicaKV.Point[0]),
+                            y: yAxis(replicaKV.Point[1])
+                        };
+                        
+                        // Add the link
+                        pathsGroup.append("line")
+                            .attr("class", "replica-link")
+                            .attr("x1", primaryPoint.x)
+                            .attr("y1", primaryPoint.y)
+                            .attr("x2", replicaPoint.x)
+                            .attr("y2", replicaPoint.y)
+                            .attr("stroke", "#6c757d")
+                            .attr("stroke-width", 2)
+                            .attr("stroke-dasharray", "4")
+                            .attr("opacity", 0.9)
+                            .on("mouseover", function(event) {
+                                d3.select(this)
+                                    .attr("stroke-width", 3)
+                                    .attr("opacity", 1);
+                                showTooltip(event, `Replication link:<br>${primaryKV.Key} on ${primaryKV.NodeID} → ${replicaKV.NodeID}`);
+                            })
+                            .on("mouseout", function() {
+                                d3.select(this)
+                                    .attr("stroke-width", 2)
+                                    .attr("opacity", 0.9);
+                                hideTooltip();
+                            });
+                            
+                        // Add arrowhead to indicate replication direction
+                        pathsGroup.append("polygon")
+                            .attr("points", "0,-4 8,0 0,4")
+                            .attr("fill", "#6c757d")
+                            .attr("opacity", 0.9)
+                            .attr("transform", function() {
+                                // Calculate the position and rotation for the arrowhead
+                                const angle = Math.atan2(replicaPoint.y - primaryPoint.y, replicaPoint.x - primaryPoint.x) * 180 / Math.PI;
+                                const midX = (primaryPoint.x + replicaPoint.x) / 2;
+                                const midY = (primaryPoint.y + replicaPoint.y) / 2;
+                                return `translate(${midX},${midY}) rotate(${angle})`;
+                            });
+                    });
+                });
+            }
+            
+            // Add key labels
+            const keyLabels = keysGroup.selectAll(".key-label")
+                .data(state.keyValuePairs, d => d.Key + (d.IsPrimaryCopy ? "" : "_replica_" + d.NodeID));
+                
+            keyLabels.exit().remove();
+            
+            const newKeyLabels = keyLabels.enter()
+                .append("g")
+                .attr("class", "key-label");
+            
+            // Add the background rect for text
+            newKeyLabels.append("rect")
+                .attr("class", "key-text-bg");
+                
+            // Add the main text element for the key
+            newKeyLabels.append("text")
+                .attr("class", "key-text")
+                .attr("pointer-events", "none");
+            
+            // Update all labels
+            keyLabels.merge(newKeyLabels)
+                .attr("transform", d => `translate(${xAxis(d.Point[0]) + config.keyRadius + 5}, ${yAxis(d.Point[1])})`);
+            
+            // Update the text for all labels
+            const textElements = keyLabels.merge(newKeyLabels).select(".key-text")
+                .text(d => d.Key)
+                .attr("font-size", "12px")
+                .attr("font-weight", d => d.IsPrimaryCopy ? "bold" : "normal")
+                .attr("fill", d => d.IsPrimaryCopy ? "#333" : "#666")
+                .attr("opacity", d => d.IsPrimaryCopy ? 1 : 0.8)
+                .attr("y", 0) // Center vertically
+                .attr("x", 3); // Add a little padding
+                
+            // Update background rectangles for each text
+            keyLabels.merge(newKeyLabels).select(".key-text-bg")
+                .each(function(d, i) {
+                    const textElement = d3.select(this.parentNode).select(".key-text").node();
+                    const textWidth = textElement.getComputedTextLength();
+                    
+                    d3.select(this)
+                        .attr("width", textWidth + 6) // Add padding
+                        .attr("height", 18) // Fixed height
+                        .attr("y", -9) // Center vertically (half of height)
+                        .attr("x", 0); // Start at the beginning
+                });
+            
+            // Add or update the encryption indicator and replica count
+            keyLabels.merge(newKeyLabels).each(function(d) {
+                const g = d3.select(this);
+                
+                // Encryption lock
+                let lock = g.select(".encryption-lock");
+                if (d.Encrypted) {
+                    if (lock.empty()) {
+                        g.append("text")
+                            .attr("class", "encryption-lock")
+                            .attr("dx", function() { return d.Key.length * 5.5; })
+                            .attr("dy", 0)
+                            .attr("font-size", "10px")
+                            .attr("fill", "#28a745")
+                            .text("🔒");
+                    }
+                } else {
+                    if (!lock.empty()) {
+                        lock.remove();
+                    }
+                }
+                
+                // Replica count
+                let replicaCount = g.select(".replica-count");
+                if (d.ReplicaNodes && d.ReplicaNodes.length > 0) {
+                    if (replicaCount.empty()) {
+                        const offset = d.Encrypted ? d.Key.length * 5.5 + 15 : d.Key.length * 5.5;
+                        g.append("text")
+                            .attr("class", "replica-count")
+                            .attr("dx", offset)
+                            .attr("dy", 0)
+                            .attr("font-size", "10px")
+                            .attr("fill", "#6c757d")
+                            .text(`🔄${d.ReplicaNodes.length}`);
+                    } else {
+                        replicaCount.text(`🔄${d.ReplicaNodes.length}`);
+                    }
+                } else {
+                    if (!replicaCount.empty()) {
+                        replicaCount.remove();
+                    }
+                }
+            });
+            
+            // Update routing paths
+            const paths = pathsGroup.selectAll(".routing-path")
+                .data(state.routingPaths, (d, i) => `${d.RequestType}-${d.Key}-${i}`);
+            
+            paths.exit().remove();
+            
+            state.routingPaths.forEach((routingPath, pathIndex) => {
+                if (routingPath.Path.length <= 1) return;
+                
+                // Create path points
+                const pathPoints = [];
+                for (let i = 0; i < routingPath.Path.length; i++) {
+                    const nodeId = routingPath.Path[i];
+                    const node = state.nodes.find(n => n.id === nodeId);
+                    if (node) {
+                        pathPoints.push({
+                            x: xAxis((node.zone.MinPoint[0] + node.zone.MaxPoint[0]) / 2),
+                            y: yAxis((node.zone.MinPoint[1] + node.zone.MaxPoint[1]) / 2)
+                        });
+                    }
+                }
+                
+                if (pathPoints.length <= 1) return;
+                
+                // Create line function
+                const lineFunction = d3.line()
+                    .x(d => d.x)
+                    .y(d => d.y)
+                    .curve(d3.curveLinear);
+                
+                // Check if we need to create a new path
+                let path = pathsGroup.select(`.routing-path-${pathIndex}`);
+                if (path.empty()) {
+                    // Create path element
+                    path = pathsGroup.append("path")
+                        .attr("class", `routing-path routing-path-${pathIndex}`)
+                        .attr("d", lineFunction(pathPoints))
+                        .attr("fill", "none")
+                        .attr("stroke", getColorForRequestType(routingPath.RequestType))
+                        .attr("stroke-width", 3)
+                        .attr("stroke-dasharray", getTotalLength => {
+                            const totalLength = path.node().getTotalLength();
+                            return `${totalLength} ${totalLength}`;
+                        })
+                        .attr("stroke-dashoffset", path => path.node().getTotalLength())
+                        .attr("opacity", 0.7);
+                    
+                    // Animate the path
+                    path.transition()
+                        .duration(config.pathDuration)
+                        .attr("stroke-dashoffset", 0)
+                        .on("end", function() {
+                            // Fade out after completion
+                            d3.select(this)
+                                .transition()
+                                .duration(1000)
+                                .attr("opacity", 0)
+                                .remove();
+                        });
+                    
+                    // Add route markers (arrows)
+                    for (let i = 0; i < pathPoints.length - 1; i++) {
+                        const p1 = pathPoints[i];
+                        const p2 = pathPoints[i + 1];
+                        
+                        // Calculate angle for the arrow
+                        const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+                        
+                        // Calculate midpoint for the arrow
+                        const midX = (p1.x + p2.x) / 2;
+                        const midY = (p1.y + p2.y) / 2;
+                        
+                        // Add arrow marker
+                        pathsGroup.append("path")
+                            .attr("d", "M0,-5L10,0L0,5")
+                            .attr("fill", getColorForRequestType(routingPath.RequestType))
+                            .attr("transform", `translate(${midX},${midY}) rotate(${angle})`)
+                            .attr("opacity", 0)
+                            .transition()
+                            .delay((config.pathDuration / pathPoints.length) * i)
+                            .duration(500)
+                            .attr("opacity", 1)
+                            .transition()
+                            .delay(config.pathDuration - (config.pathDuration / pathPoints.length) * i)
+                            .duration(500)
+                            .attr("opacity", 0)
+                            .remove();
+                    }
+                }
+            });
+        }
+        
+        // Helper function to get color for request type
+        function getColorForRequestType(requestType) {
+            switch (requestType) {
+                case "PUT": return "#28a745";
+                case "GET": return "#17a2b8";
+                case "DELETE": return "#dc3545";
+                default: return "#6c757d";
+            }
+        }
+        
+        // Show tooltip
+        function showTooltip(event, text) {
+            tooltip
+                .style("opacity", 1)
+                .style("left", (event.pageX + 10) + "px")
+                .style("top", (event.pageY - 20) + "px")
+                .html(text);
+        }
+        
+        // Hide tooltip
+        function hideTooltip() {
+            tooltip.style("opacity", 0);
+        }
+        
+        // Update info panel
+        function updateInfoPanel() {
+            document.getElementById("node-count").textContent = state.nodes.length;
+            
+            // Count primary key-value pairs only
+            const primaryKeyCount = state.keyValuePairs.filter(kv => kv.IsPrimaryCopy).length;
+            document.getElementById("kv-count").textContent = primaryKeyCount;
+            
+            document.getElementById("replication-factor").value = state.replicationFactor;
+            
+            // Update selected entity info
+            if (state.selectedEntity) {
+                let infoHtml = "";
+                if (state.selectedEntity.type === "node") {
+                    const node = state.selectedEntity.data;
+                    
+                    // Count primary and replica KV pairs in this node
+                    const primaryKVs = state.keyValuePairs.filter(kv => kv.NodeID === node.id && kv.IsPrimaryCopy);
+                    const replicaKVs = state.keyValuePairs.filter(kv => kv.NodeID === node.id && !kv.IsPrimaryCopy);
+                    
+                    infoHtml = `
+                        <strong>Node ID:</strong> ${node.id}<br>
+                        <strong>Address:</strong> ${node.address}<br>
+                        <strong>Zone:</strong> (${node.zone.MinPoint[0].toFixed(3)}, ${node.zone.MinPoint[1].toFixed(3)}) to 
+                        (${node.zone.MaxPoint[0].toFixed(3)}, ${node.zone.MaxPoint[1].toFixed(3)})<br>
+                        <strong>Neighbors:</strong> ${node.neighbors.join(", ") || "None"}<br>
+                        <strong>Primary KV Pairs:</strong> ${primaryKVs.length}<br>
+                        <strong>Replica KV Pairs:</strong> ${replicaKVs.length}
+                    `;
+                } else if (state.selectedEntity.type === "keyValue") {
+                    const kv = state.selectedEntity.data;
+                    infoHtml = `
+                        <strong>Key:</strong> ${kv.Key}<br>
+                        <strong>Value:</strong> ${kv.Value}<br>
+                        <strong>Coordinates:</strong> (${kv.Point[0].toFixed(3)}, ${kv.Point[1].toFixed(3)})<br>
+                        <strong>Stored on Node:</strong> ${kv.NodeID}<br>
+                    `;
+                    
+                    if (kv.Encrypted) {
+                        infoHtml += `<strong>Security:</strong> <span style="color: #28a745;">🔒 Encrypted</span><br>`;
+                    }
+                    
+                    if (kv.IsPrimaryCopy) {
+                        infoHtml += `<strong>Type:</strong> Primary Copy<br>`;
+                        if (kv.ReplicaNodes && kv.ReplicaNodes.length > 0) {
+                            infoHtml += `<strong>Replicated to:</strong> ${kv.ReplicaNodes.join(", ")}<br>`;
+                        }
+                        
+                        // Auto-fill the replication input when a key is selected
+                        document.getElementById("replicate-key-input").value = kv.Key;
+                    } else {
+                        infoHtml += `<strong>Type:</strong> <span style="color: #6c757d;">Replica</span><br>`;
+                    }
+                }
+                document.getElementById("selected-info").innerHTML = infoHtml;
+            }
+        }
+        
+        // Replicate a specific key
+        function replicateKey() {
+            const key = document.getElementById("replicate-key-input").value;
+            const factor = parseInt(document.getElementById("key-replication-factor").value);
+            
+            if (!key) {
+                alert("Please enter a key to replicate");
+                return;
+            }
+            
+            if (isNaN(factor) || factor < 1) {
+                alert("Replication factor must be at least 1");
+                return;
+            }
+            
+            fetch("/api/replication/replicate", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ key: key, replicas: factor })
+            })
+            .then(response => {
+                if (response.status === 404) {
+                    throw new Error("Key not found");
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("Replication response:", data);
+                // Check for replicaNodes field with case-insensitive approach
+                const replicaNodes = data.replicaNodes || data.ReplicaNodes;
+                if (!replicaNodes) {
+                    console.error("replicaNodes field is missing in the response:", JSON.stringify(data));
+                    throw new Error("Response missing replicaNodes field");
+                }
+                document.getElementById("last-action").textContent = `Key '${key}' replicated to ${replicaNodes.length} nodes`;
+                fetchState();
+            })
+            .catch(error => {
+                console.error("Error replicating key:", error);
+                document.getElementById("last-action").textContent = `Error replicating key: ${error.message}`;
+                alert("Error replicating key: " + error.message);
+            });
+        }
+        
+        // Select an entity (node or key-value pair)
+        function selectEntity(entity) {
+            state.selectedEntity = entity;
+            updateInfoPanel();
+        }
+        
+        // Global variable to store the current preview point
+        let currentPreviewPoint = null;
+        let currentPreviewCircle = null;
+        let currentPreviewLines = [];
+        let currentPreviewArrows = [];
+        
+        // Preview a random join point
+        function previewJoinPoint() {
+            // Clear any existing preview
+            clearJoinPreview();
+            
+            // Debug: output state to console
+            console.log("Current state:", state);
+            console.log("Nodes:", state.nodes);
+            
+            // Generate a new node ID for this potential join
+            const potentialNodeId = `node-${state.nodes.length}`;
+            
+            // Check if a node is selected (to restrict join point to that node's zone)
+            let ownerNode = null;
+            let randomPoint;
+            
+            if (state.selectedEntity && state.selectedEntity.type === "node") {
+                // A node is selected, use its zone to generate the join point
+                ownerNode = state.selectedEntity.data;
+                console.log("Using selected node for join point:", ownerNode.id);
+                
+                // Generate a random point within this node's zone
+                const zone = ownerNode.zone;
+                const minPoint = zone.MinPoint || zone.minPoint;
+                const maxPoint = zone.MaxPoint || zone.maxPoint;
+                
+                // Check if we already have a join point for this node
+                if (state.joinPoints[potentialNodeId]) {
+                    // Check if the existing join point is within this zone
+                    const existingPoint = state.joinPoints[potentialNodeId];
+                    if (pointInZone(existingPoint, zone)) {
+                        randomPoint = existingPoint;
+                        console.log("Reusing existing join point in selected zone:", randomPoint);
+                    } else {
+                        // Generate a new point within this zone
+                        randomPoint = [
+                            minPoint[0] + Math.random() * (maxPoint[0] - minPoint[0]),
+                            minPoint[1] + Math.random() * (maxPoint[1] - minPoint[1])
+                        ];
+                        state.joinPoints[potentialNodeId] = randomPoint;
+                        console.log("Generated new join point in selected zone:", randomPoint);
+                    }
+                } else {
+                    // Generate a new point within this zone
+                    randomPoint = [
+                        minPoint[0] + Math.random() * (maxPoint[0] - minPoint[0]),
+                        minPoint[1] + Math.random() * (maxPoint[1] - minPoint[1])
+                    ];
+                    state.joinPoints[potentialNodeId] = randomPoint;
+                    console.log("Generated new join point in selected zone:", randomPoint);
+                }
+            } else {
+                // No node selected, use normal behavior
+                // Check if we already have a join point for this node ID
+                if (state.joinPoints[potentialNodeId]) {
+                    // Reuse the existing join point
+                    randomPoint = state.joinPoints[potentialNodeId];
+                    console.log("Reusing existing join point for", potentialNodeId, ":", randomPoint);
+                } else {
+                    // Generate a new random point
+                    randomPoint = [Math.random(), Math.random()];
+                    // Store it for future use
+                    state.joinPoints[potentialNodeId] = randomPoint;
+                    console.log("Generated new join point for", potentialNodeId, ":", randomPoint);
+                }
+                
+                // Find the node that owns this point
+                if (Array.isArray(state.nodes)) {
+                    // Check each node to see if it contains the point
+                    for (let i = 0; i < state.nodes.length; i++) {
+                        const node = state.nodes[i];
+                        if (node && node.zone && pointInZone(randomPoint, node.zone)) {
+                            ownerNode = node;
+                            break;
+                        }
+                    }
+                } else {
+                    console.error("state.nodes is not an array:", typeof state.nodes);
+                }
+            }
+            
+            currentPreviewPoint = randomPoint;
+            console.log("Random point:", randomPoint);
+            
+            if (!ownerNode) {
+                console.error("Could not find a node that owns this point:", randomPoint);
+                alert("Could not find a node that owns this point. Please try again.");
+                return;
+            }
+            
+            // Visualize the random point
+            currentPreviewCircle = pathsGroup.append("circle")
+                .attr("class", "preview-point")
+                .attr("cx", xAxis(randomPoint[0]))
+                .attr("cy", yAxis(randomPoint[1]))
+                .attr("r", 8)
+                .attr("fill", "rgba(255, 215, 0, 0.7)")
+                .attr("stroke", "#FFD700")
+                .attr("stroke-width", 2)
+                .attr("opacity", 0);
+            
+            // Add pulsating animation for the point
+            function pulsePreviewPoint() {
+                currentPreviewCircle
+                    .transition()
+                    .duration(1000)
+                    .attr("r", 12)
+                    .attr("opacity", 0.9)
+                    .transition()
+                    .duration(1000)
+                    .attr("r", 8)
+                    .attr("opacity", 0.7)
+                    .on("end", pulsePreviewPoint);
+            }
+            
+            // Start with fade-in
+            currentPreviewCircle
+                .transition()
+                .duration(500)
+                .attr("opacity", 0.7)
+                .on("end", pulsePreviewPoint);
+            
+            // Create tooltip text
+            const tooltipText = `Random Join Point (${randomPoint[0].toFixed(3)}, ${randomPoint[1].toFixed(3)})<br>
+                                <strong>This point is in node:</strong> ${ownerNode.id}<br>
+                                <strong>If a node joins here:</strong> ${ownerNode.id}'s zone will split`;
+            
+            // Add mouse events for the preview point
+            currentPreviewCircle
+                .on("mouseover", function(event) {
+                    showTooltip(event, tooltipText);
+                })
+                .on("mouseout", hideTooltip);
+            
+            // Highlight the owner node's zone by creating a highlight rect
+            const nodeZone = ownerNode.zone;
+            const minPoint = nodeZone.MinPoint || nodeZone.minPoint;
+            const maxPoint = nodeZone.MaxPoint || nodeZone.maxPoint;
+            
+            // Create a highlight rect for the zone
+            const highlightRect = zonesGroup.append("rect")
+                .attr("class", "zone-highlight")
+                .attr("x", xAxis(minPoint[0]))
+                .attr("y", yAxis(maxPoint[1]))
+                .attr("width", xAxis(maxPoint[0]) - xAxis(minPoint[0]))
+                .attr("height", yAxis(minPoint[1]) - yAxis(maxPoint[1]))
+                .attr("fill", "none")
+                .attr("stroke", "#FFD700")
+                .attr("stroke-width", 3)
+                .attr("stroke-dasharray", "5,5")
+                .attr("opacity", 0);
+            
+            currentPreviewLines.push(highlightRect);
+            
+            // Animate the highlight
+            highlightRect.transition()
+                .duration(500)
+                .attr("opacity", 1);
+            
+            // Show arrow from point to node
+            const nodeCenter = {
+                x: xAxis((minPoint[0] + maxPoint[0]) / 2),
+                y: yAxis((minPoint[1] + maxPoint[1]) / 2)
+            };
+            
+            // Add an arrow pointing from the join point to the node
+            const arrow = pathsGroup.append("path")
+                .attr("d", `M${xAxis(randomPoint[0])},${yAxis(randomPoint[1])} L${nodeCenter.x},${nodeCenter.y}`)
+                .attr("stroke", "#FFD700")
+                .attr("stroke-width", 2)
+                .attr("opacity", 0)
+                .attr("fill", "none")
+                .attr("marker-end", "url(#arrow)");
+            
+            currentPreviewArrows.push(arrow);
+            
+            // Add arrow marker definition if not already present
+            if (svg.select("#arrow").empty()) {
+                svg.append("defs").append("marker")
+                    .attr("id", "arrow")
+                    .attr("viewBox", "0 -5 10 10")
+                    .attr("refX", 8)
+                    .attr("refY", 0)
+                    .attr("markerWidth", 6)
+                    .attr("markerHeight", 6)
+                    .attr("orient", "auto")
+                    .append("path")
+                    .attr("d", "M0,-5L10,0L0,5")
+                    .attr("fill", "#FFD700");
+            }
+            
+            // Animate the arrow
+            arrow.transition()
+                .duration(1000)
+                .attr("opacity", 0.8);
+            
+            // Add text to explain
+            const infoText = pathsGroup.append("text")
+                .attr("x", xAxis(randomPoint[0]) + 20)
+                .attr("y", yAxis(randomPoint[1]) - 15)
+                .attr("fill", "#333")
+                .attr("font-size", "12px")
+                .attr("opacity", 0)
+                .text("Random join point");
+            
+            currentPreviewLines.push(infoText);
+            
+            infoText.transition()
+                .duration(1000)
+                .attr("opacity", 1);
+            
+            // Add text to explain the owner
+            const ownerText = pathsGroup.append("text")
+                .attr("x", nodeCenter.x + 15)
+                .attr("y", nodeCenter.y - 15)
+                .attr("fill", "#333")
+                .attr("font-size", "12px")
+                .attr("opacity", 0)
+                .text(`Zone owner: ${ownerNode.id}`);
+            
+            currentPreviewLines.push(ownerText);
+            
+            ownerText.transition()
+                .duration(1000)
+                .attr("opacity", 1);
+            
+            // Update the last action text
+            document.getElementById("last-action").innerHTML = `<strong>Preview:</strong> Random point (${randomPoint[0].toFixed(3)}, ${randomPoint[1].toFixed(3)}) selected in ${ownerNode.id}'s zone.<br>Click "Add Node" to complete the join operation.`;
+        }
+        
+        // Clear any existing join preview
+        function clearJoinPreview() {
+            if (currentPreviewCircle) {
+                currentPreviewCircle.remove();
+                currentPreviewCircle = null;
+            }
+            
+            // Remove any arrows
+            currentPreviewArrows.forEach(arrow => arrow.remove());
+            currentPreviewArrows = [];
+            
+            // Remove any text explanations and highlight rects
+            currentPreviewLines.forEach(element => element.remove());
+            currentPreviewLines = [];
+            
+            // We no longer need to reset zone strokes since we're using a separate highlight rect
+        }
+        
+        // Helper function to check if a point is in a zone
+        function pointInZone(point, zone) {
+            // Debug what we're checking
+            console.log("Checking point:", point, "against zone:", zone);
+            
+            // Make sure zone is valid
+            if (!zone) {
+                console.error("Invalid zone:", zone);
+                return false;
+            }
+            
+            // Handle both upper and lowercase property names
+            const minPoint = zone.MinPoint || zone.minPoint;
+            const maxPoint = zone.MaxPoint || zone.maxPoint;
+            
+            if (!minPoint || !maxPoint) {
+                console.error("Zone missing min/max points:", zone);
+                return false;
+            }
+            
+            // Now check if the point is in the zone
+            return point[0] >= minPoint[0] && 
+                   point[0] < maxPoint[0] && 
+                   point[1] >= minPoint[1] && 
+                   point[1] < maxPoint[1];
+        }
+        
+        // Add a new node
+        function addNode() {
+            // If we have a preview point, use it; otherwise generate a random point
+            const usePreviewPoint = currentPreviewPoint !== null;
+            const requestBody = {};
+            
+            if (usePreviewPoint) {
+                requestBody.joinPoint = currentPreviewPoint;
+            } else {
+                // Generate a new random point if needed (but this should rarely happen)
+                const randomPoint = [Math.random(), Math.random()];
+                requestBody.joinPoint = randomPoint;
+            }
+            
+            fetch("/api/node/add", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => response.json())
+            .then(data => {
+                // Clear any existing preview
+                clearJoinPreview();
+                
+                document.getElementById("last-action").textContent = `Added node: ${data.id}`;
+                
+                // Visualize the join point with a temporary highlight
+                if (data.point) {
+                    const joinPoint = pathsGroup.append("circle")
+                        .attr("cx", xAxis(data.point[0]))
+                        .attr("cy", yAxis(data.point[1]))
+                        .attr("r", 10)
+                        .attr("fill", "rgba(255, 255, 0, 0.5)")
+                        .attr("stroke", "#FFD700")
+                        .attr("stroke-width", 2)
+                        .attr("opacity", 0);
+                    
+                    // Animate the join point
+                    joinPoint.transition()
+                        .duration(500)
+                        .attr("opacity", 1)
+                        .transition()
+                        .duration(1000)
+                        .attr("opacity", 0.8)
+                        .transition()
+                        .duration(500)
+                        .attr("opacity", 0)
+                        .on("end", function() {
+                            joinPoint.remove();
+                        });
+                }
+                
+                // Reset current preview point
+                currentPreviewPoint = null;
+                
+                fetchState();
+            })
+            .catch(error => console.error("Error adding node:", error));
+        }
+        
+        // Reset the simulation
+        function resetSimulation() {
+            // Clear any existing preview
+            clearJoinPreview();
+            
+            // Clear any existing path visualizations immediately
+            pathsGroup.selectAll("*").remove();
+            
+            fetch("/api/reset", {
+                method: "POST"
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById("last-action").textContent = "Reset simulation";
+                // Clear selected entity
+                state.selectedEntity = null;
+                // Clear join points
+                state.joinPoints = {};
+                // Clear routing paths
+                state.routingPaths = [];
+                
+                fetchState();
+            })
+            .catch(error => console.error("Error resetting simulation:", error));
+        }
+        
+        // Put key-value pair
+        function putKeyValue() {
+            const key = document.getElementById("put-key-input").value;
+            const value = document.getElementById("put-value-input").value;
+            const encrypt = document.getElementById("encrypt-checkbox").checked;
+            
+            if (!key || !value) {
+                alert("Please enter both key and value");
+                return;
+            }
+            
+            fetch("/api/kv/put", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ key, value, encrypt })
+            })
+            .then(response => response.json())
+            .then(data => {
+                const encryptedStatus = encrypt ? " (Encrypted)" : "";
+                document.getElementById("last-action").textContent = `PUT: Key="${key}", Value="${value}"${encryptedStatus}`;
+                fetchState();
+            })
+            .catch(error => console.error("Error putting key-value:", error));
+        }
+        
+        // Get key-value pair
+        function getKeyValue() {
+            const key = document.getElementById("get-key-input").value;
+            
+            if (!key) {
+                alert("Please enter a key");
+                return;
+            }
+            
+            fetch(`/api/kv/get/${key}`)
+            .then(response => {
+                if (response.status === 404) {
+                    throw new Error("Key not found");
+                }
+                return response.json();
+            })
+            .then(data => {
+                document.getElementById("last-action").textContent = `GET: Key="${key}", Value="${data.value}"`;
+                document.getElementById("put-value-input").value = data.value;
+                // Checkbox should reflect the encryption status of the key
+                document.getElementById("encrypt-checkbox").checked = data.encrypted || false;
+                // Also update the put-key-input for convenience
+                document.getElementById("put-key-input").value = key;
+                fetchState();
+            })
+            .catch(error => {
+                console.error("Error getting key-value:", error);
+                document.getElementById("last-action").textContent = `GET: Key="${key}" - Not found`;
+                alert("Key not found");
+            });
+        }
+        
+        // Delete key-value pair
+        function deleteKeyValue() {
+            const key = document.getElementById("get-key-input").value;
+            
+            if (!key) {
+                alert("Please enter a key");
+                return;
+            }
+            
+            fetch(`/api/kv/delete/${key}`, {
+                method: "DELETE"
+            })
+            .then(response => {
+                if (response.status === 404) {
+                    throw new Error("Key not found");
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log("Delete response:", data);
+                
+                let statusMessage;
+                if (data.replicasCount > 0) {
+                    statusMessage = `DELETE: Key="${key}" deleted from primary and ${data.replicasCount} replica(s). Total entries removed: ${data.totalDeleted}`;
+                } else {
+                    statusMessage = `DELETE: Key="${key}" deleted (no replicas)`;
+                }
+                
+                document.getElementById("last-action").textContent = statusMessage;
+                document.getElementById("put-value-input").value = "";
+                document.getElementById("put-key-input").value = "";
+                document.getElementById("encrypt-checkbox").checked = false;
+                document.getElementById("get-key-input").value = "";
+                fetchState();
+            })
+            .catch(error => {
+                console.error("Error deleting key-value:", error);
+                document.getElementById("last-action").textContent = `DELETE: Key="${key}" - Not found`;
+                alert("Key not found");
+            });
+        }
+        
+        // Set replication factor
+        function setReplicationFactor() {
+            const factor = parseInt(document.getElementById("replication-factor").value);
+            
+            if (isNaN(factor) || factor < 1) {
+                alert("Replication factor must be at least 1");
+                return;
+            }
+            
+            fetch("/api/replication/factor", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ factor: factor })
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById("last-action").textContent = `Replication factor set to ${factor}`;
+                fetchState();
+            })
+            .catch(error => console.error("Error setting replication factor:", error));
+        }
+        
+        // Initialize the application
+        function init() {
+            // Attach event listeners
+            document.getElementById("preview-join-btn").addEventListener("click", previewJoinPoint);
+            document.getElementById("add-node-btn").addEventListener("click", addNode);
+            document.getElementById("reset-btn").addEventListener("click", resetSimulation);
+            document.getElementById("put-btn").addEventListener("click", putKeyValue);
+            document.getElementById("get-btn").addEventListener("click", getKeyValue);
+            document.getElementById("delete-btn").addEventListener("click", deleteKeyValue);
+            document.getElementById("set-replication-btn").addEventListener("click", setReplicationFactor);
+            document.getElementById("replicate-key-btn").addEventListener("click", replicateKey);
+            
+            // Fetch initial state
+            fetchState();
+            
+            // Set up periodic refresh
+            setInterval(fetchState, config.refreshInterval);
+        }
+        
+        // Start the application when DOM is loaded
+        document.addEventListener("DOMContentLoaded", init);
+    </script>
+</body>
+</html> 

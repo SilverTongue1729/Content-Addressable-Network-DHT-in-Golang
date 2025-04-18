@@ -101,6 +101,9 @@ help:
 	@echo "  run-test-client : Run the test client"
 	@echo "  clean          : Remove build and test artifacts"
 	@echo "  deps           : Fetch dependencies"
+	@echo "  demo-integrity : Run the integrity demo"
+	@echo "  demo-cache     : Run the cache demo"
+	@echo "  visualize      : Start the CAN DHT visualization tool"
 	@echo "  help           : Show this help message"
 
 .PHONY: demo-integrity
@@ -109,6 +112,11 @@ demo-integrity: build
 	./bin/integrity-demo
 
 .PHONY: demo-cache
-demo-cache: build
+demo-cache:
 	@echo "Running cache demo..."
 	@go run ./cmd/cache-demo/main.go
+
+.PHONY: visualize
+visualize:
+	@echo "Starting CAN DHT visualization tool..."
+	@go run ./cmd/visualization/main.go

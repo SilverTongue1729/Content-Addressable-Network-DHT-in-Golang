@@ -213,3 +213,28 @@ Contributions are welcome! Please feel free to submit issues or pull requests.
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Visualization Tool
+
+A web-based visualization tool is available to help understand and demonstrate the CAN DHT system. The visualization provides an interactive interface that shows:
+
+- Nodes displayed as labeled points in a 2D coordinate space
+- Zones shown as rectangles around each node to indicate partitions
+- Key-Value pairs marked as colored dots within zones
+- Routing paths animated as lines showing GET/PUT/DELETE request paths between nodes
+
+### Running the Visualization
+
+```bash
+go run cmd/visualization/main.go
+```
+
+Then open your browser and navigate to http://localhost:8090.
+
+The visualization allows you to:
+- Add and remove nodes to see dynamic zone splitting
+- Perform key-value operations (PUT, GET, DELETE)
+- Observe routing paths in real-time
+- View detailed information about nodes and key-value pairs
+
+For more details, see the [Visualization README](cmd/visualization/README.md).

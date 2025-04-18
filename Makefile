@@ -12,6 +12,10 @@ build:
 demo-cache:
 	@cd can-dht && $(MAKE) demo-cache
 
+.PHONY: visualizer
+visualizer:
+	@cd can-dht && $(MAKE) visualizer
+
 .PHONY: help
 help:
 	@echo "This is a wrapper Makefile that forwards commands to can-dht/Makefile"
@@ -21,4 +25,5 @@ help:
 	@echo "  all            : Forward to can-dht/Makefile"
 	@echo "  build          : Forward to can-dht/Makefile"
 	@echo "  demo-cache     : Run the cache demo"
+	@echo "  visualizer     : Start the visualization tool"
 	@echo "  help           : Show this help message" 

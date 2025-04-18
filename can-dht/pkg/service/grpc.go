@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/can-dht/pkg/node"
 	pb "github.com/can-dht/proto"
@@ -106,21 +107,18 @@ func (s *GRPCServer) Join(ctx context.Context, req *pb.JoinRequest) (*pb.JoinRes
 		}
 	}
 
-	// Collect neighbors for the new node
-	neighbors := make([]*pb.NodeInfo, 0)
-	for _, neighborInfo := range s.canServer.Node.GetNeighbors() {
-		protoInfo := convertNodeInfoToProto(neighborInfo)
-		neighbors = append(neighbors, protoInfo)
-	}
-
 	// Add the new node as a neighbor
+	newNodeID := node.NodeID(req.NewNodeId)
 	s.canServer.Node.AddNeighbor(
-		node.NodeID(req.NewNodeId),
+		newNodeID,
 		req.NewNodeAddress,
 		newZone,
 	)
 
-	// Add this node to the neighbors list for the new node
+	// Prepare neighbors list for the new node
+	neighbors := make([]*pb.NodeInfo, 0)
+
+	// Add the current node to the neighbors list
 	selfInfo := &pb.NodeInfo{
 		Id:      string(s.canServer.Node.ID),
 		Address: s.canServer.Node.Address,
@@ -135,7 +133,33 @@ func (s *GRPCServer) Join(ctx context.Context, req *pb.JoinRequest) (*pb.JoinRes
 	}
 	neighbors = append(neighbors, selfInfo)
 
-	return &pb.JoinResponse{
+	// Process all existing neighbors to update relationships
+	nodesToNotify := make([]*node.NeighborInfo, 0)
+
+	for neighborID, neighborInfo := range s.canServer.Node.GetNeighbors() {
+		// Skip the new node
+		if neighborID == newNodeID {
+			continue
+		}
+
+		// Check if the neighbor should also be a neighbor of the new node
+		if isZonesAdjacent(newZone, neighborInfo.Zone, s.canServer.Router.Dimensions) {
+			// Add as a neighbor to the new node
+			neighbors = append(neighbors, convertNodeInfoToProto(neighborInfo))
+
+			// This neighbor needs to be notified about the new node
+			nodesToNotify = append(nodesToNotify, neighborInfo)
+		}
+
+		// Check if this neighbor is still a neighbor of the current node after split
+		if !isZonesAdjacent(s.canServer.Node.Zone, neighborInfo.Zone, s.canServer.Router.Dimensions) {
+			// No longer neighbors, remove from current node
+			s.canServer.Node.RemoveNeighbor(neighborID)
+		}
+	}
+
+	// Prepare the response
+	response := &pb.JoinResponse{
 		Success: true,
 		AssignedZone: &pb.Zone{
 			MinPoint: &pb.Point{
@@ -147,7 +171,47 @@ func (s *GRPCServer) Join(ctx context.Context, req *pb.JoinRequest) (*pb.JoinRes
 		},
 		Neighbors: neighbors,
 		Data:      dataToTransfer,
-	}, nil
+	}
+
+	// Notify other nodes about the new node after unlocking our state
+	// to avoid deadlocks and reduce lock contention
+	go func(notifyNodes []*node.NeighborInfo, newNodeInfo *pb.NodeInfo) {
+		for _, n := range notifyNodes {
+			// Connect to the neighbor
+			client, conn, err := ConnectToNode(context.Background(), n.Address)
+			if err != nil {
+				log.Printf("Failed to connect to neighbor %s for update: %v", n.ID, err)
+				continue
+			}
+
+			// Send update
+			updateReq := &pb.UpdateNeighborsRequest{
+				NodeId: string(newNodeID),
+				Neighbors: []*pb.NodeInfo{
+					newNodeInfo,
+				},
+			}
+
+			_, err = client.UpdateNeighbors(context.Background(), updateReq)
+			conn.Close()
+			if err != nil {
+				log.Printf("Failed to update neighbor %s: %v", n.ID, err)
+			}
+		}
+	}(nodesToNotify, &pb.NodeInfo{
+		Id:      req.NewNodeId,
+		Address: req.NewNodeAddress,
+		Zone: &pb.Zone{
+			MinPoint: &pb.Point{
+				Coordinates: newZone.MinPoint,
+			},
+			MaxPoint: &pb.Point{
+				Coordinates: newZone.MaxPoint,
+			},
+		},
+	})
+
+	return response, nil
 }
 
 // Leave handles leave requests

@@ -413,7 +413,7 @@ func (e *EnhancedAuthManager) ModifyPermissions(adminUser, adminPassword, target
 		return fmt.Errorf("target user %s not found", targetUser)
 	}
 
-	// Get current permissions
+	// Check if target user already has permissions for this data
 	_, targetExists := dataEntry.Permissions[targetUser]
 
 	// If user is getting new permissions and didn't have them before
