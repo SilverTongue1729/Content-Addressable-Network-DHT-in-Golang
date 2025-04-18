@@ -46,6 +46,12 @@ type CANServer struct {
 	// IntegrityChecker performs periodic integrity checks
 	IntegrityChecker *integrity.PeriodicChecker
 
+	// FailureCoordination tracks ongoing failure handling
+	FailureCoordination map[node.NodeID]*FailureCoordinationInfo
+
+	// For canceling takeover timers
+	takeoverTimers map[node.NodeID]*time.Timer
+
 	mu sync.RWMutex
 }
 
@@ -65,6 +71,18 @@ type CANConfig struct {
 	HeartbeatTimeout time.Duration
 	// Interval between integrity checks (0 = disabled)
 	IntegrityCheckInterval time.Duration
+}
+
+// FailureCoordinationInfo tracks coordination information for a node failure
+type FailureCoordinationInfo struct {
+	// The failed node's zone
+	FailedZone *node.Zone
+	
+	// Have we cancelled our takeover timer?
+	TimerCancelled bool
+	
+	// Have we initiated a takeover?
+	TakeoverInitiated bool
 }
 
 // DefaultCANConfig returns a default configuration
@@ -118,12 +136,15 @@ func NewCANServer(nodeID node.NodeID, address string, config *CANConfig) (*CANSe
 		}
 	}
 
+	// Initialize failure coordination maps
 	server := &CANServer{
-		Node:       localNode,
-		Router:     router,
-		Store:      store,
-		KeyManager: keyManager,
-		Config:     config,
+		Node:                localNode,
+		Router:              router,
+		Store:               store,
+		KeyManager:          keyManager,
+		Config:              config,
+		FailureCoordination: make(map[node.NodeID]*FailureCoordinationInfo),
+		takeoverTimers:      make(map[node.NodeID]*time.Timer),
 	}
 
 	// Initialize the integrity checker if interval is non-zero
@@ -314,89 +335,177 @@ func (s *CANServer) handleDeadNode(deadNodeID node.NodeID, info *node.NeighborIn
 		return
 	}
 
-	// Determine if we should take over the zone
-	shouldTakeOver := s.shouldTakeOverZone(deadNodeID, info.Zone)
-	if !shouldTakeOver {
-		log.Printf("Not taking over zone for dead node %s", deadNodeID)
+	// Check if we're actually a neighbor of the failed node
+	if !s.Node.IsNeighborZone(info.Zone) {
+		log.Printf("Not a direct neighbor of dead node %s, not participating in takeover", deadNodeID)
 		return
 	}
 
-	// Create a context for recovery operations
+	log.Printf("Detected dead node %s, initiating takeover coordination", deadNodeID)
+
+	// Create failure coordination info
+	s.FailureCoordination[deadNodeID] = &FailureCoordinationInfo{
+		FailedZone:        info.Zone,
+		TimerCancelled:    false,
+		TakeoverInitiated: false,
+	}
+
+	// Calculate our zone volume
+	ourVolume := calculateZoneVolume(s.Node.Zone)
+
+	// Set timer proportional to our zone volume (scaled by a constant)
+	// Smaller zones get smaller timeouts, so they attempt takeover first
+	timerDuration := time.Duration(ourVolume*1000) * time.Millisecond
+
+	log.Printf("Starting takeover timer for node %s with duration %v", deadNodeID, timerDuration)
+
+	// Create a context with timeout for the takeover attempt
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
-	// Take over the zone and recover data
-	if err := s.TakeOverZone(ctx, deadNodeID, info.Zone); err != nil {
-		log.Printf("Failed to take over zone for dead node %s: %v", deadNodeID, err)
-		return
-	}
+	// Start the timer
+	timer := time.AfterFunc(timerDuration, func() {
+		// This will execute when the timer expires
+		s.mu.Lock()
+		info := s.FailureCoordination[deadNodeID]
 
-	log.Printf("Successfully took over zone for dead node %s", deadNodeID)
+		// Check if our timer was cancelled
+		if info == nil || info.TimerCancelled {
+			s.mu.Unlock()
+			cancel()
+			return
+		}
+
+		// Update our state
+		info.TakeoverInitiated = true
+		s.mu.Unlock()
+
+		// Send TAKEOVER messages to all neighbors of the failed node
+		s.broadcastTakeoverMessage(ctx, deadNodeID, info.FailedZone, ourVolume)
+
+		// Wait briefly for responses
+		time.Sleep(1 * time.Second)
+
+		// Check if we should proceed with takeover
+		s.mu.Lock()
+		info = s.FailureCoordination[deadNodeID]
+		shouldProceed := info != nil && !info.TimerCancelled && info.TakeoverInitiated
+		s.mu.Unlock()
+
+		if shouldProceed {
+			// We won the coordination, proceed with takeover
+			log.Printf("Proceeding with takeover for node %s", deadNodeID)
+			if err := s.TakeOverZone(ctx, deadNodeID, info.FailedZone); err != nil {
+				log.Printf("Failed to take over zone for dead node %s: %v", deadNodeID, err)
+			}
+		}
+
+		cancel()
+	})
+
+	// Store the timer so we can cancel it if needed
+	s.takeoverTimers[deadNodeID] = timer
 }
 
-// shouldTakeOverZone determines if this node should take over a dead node's zone
-func (s *CANServer) shouldTakeOverZone(deadNodeID node.NodeID, deadZone *node.Zone) bool {
-	// Simple policy: If zones are adjacent and we're the closest node by ID (lexicographically),
-	// then we take over the zone
+// broadcastTakeoverMessage sends TAKEOVER messages to all neighbors of the failed node
+func (s *CANServer) broadcastTakeoverMessage(ctx context.Context, failedNodeID node.NodeID, failedZone *node.Zone, ourVolume float64) {
+	// Get all our neighbors
+	neighbors := s.Node.GetNeighbors()
 
-	// Check if our zone is adjacent to the dead node's zone
-	if !isZonesAdjacent(s.Node.Zone, deadZone, s.Config.Dimensions) {
-		return false
+	// Prepare the takeover request
+	takeoverReq := &pb.TakeoverRequest{
+		SenderNodeId: string(s.Node.ID),
+		FailedNodeId: string(failedNodeID),
+		ZoneVolume:   ourVolume,
+		FailedZone: &pb.Zone{
+			MinPoint: &pb.Point{
+				Coordinates: failedZone.MinPoint,
+			},
+			MaxPoint: &pb.Point{
+				Coordinates: failedZone.MaxPoint,
+			},
+		},
 	}
 
-	// Check all remaining neighbors to see if any is "closer" to the dead node
-	for id, neighborInfo := range s.Node.Neighbors {
-		// Skip the dead node itself
-		if id == deadNodeID {
+	// Send to all neighbors
+	for _, neighbor := range neighbors {
+		// Skip neighbors that are not relevant (not neighbors of the failed node)
+		if !s.Node.IsNeighborZone(failedZone) {
 			continue
 		}
 
-		// Skip neighbors that aren't adjacent to the dead zone
-		if !isZonesAdjacent(neighborInfo.Zone, deadZone, s.Config.Dimensions) {
+		// Connect to the neighbor
+		client, conn, err := ConnectToNode(ctx, neighbor.Address)
+		if err != nil {
+			log.Printf("Failed to connect to neighbor %s for takeover coordination: %v", neighbor.ID, err)
 			continue
 		}
 
-		// If this neighbor's ID is lexicographically smaller than ours,
-		// they should take over instead
-		if string(id) < string(s.Node.ID) {
-			return false
+		// Send the takeover message
+		resp, err := client.Takeover(ctx, takeoverReq)
+		conn.Close()
+
+		if err != nil {
+			log.Printf("Failed to send takeover message to neighbor %s: %v", neighbor.ID, err)
+			continue
+		}
+
+		// Process the response
+		if !resp.AcceptTakeover {
+			// They have a smaller zone, we should cancel our takeover
+			s.mu.Lock()
+			info := s.FailureCoordination[failedNodeID]
+			if info != nil {
+				info.TimerCancelled = true
+				if timer := s.takeoverTimers[failedNodeID]; timer != nil {
+					timer.Stop()
+					delete(s.takeoverTimers, failedNodeID)
+				}
+			}
+			s.mu.Unlock()
+
+			log.Printf("Cancelling takeover for node %s due to smaller neighbor (volume: %f)",
+				failedNodeID, resp.ResponderZoneVolume)
+			return
 		}
 	}
-
-	// We're the closest eligible node to take over
-	return true
 }
 
-// isZonesAdjacent checks if two zones are adjacent
-func isZonesAdjacent(zone1, zone2 *node.Zone, dimensions int) bool {
-	if zone1 == nil || zone2 == nil {
-		return false
-	}
+// ProcessTakeoverMessage handles incoming TAKEOVER messages from other nodes
+func (s *CANServer) ProcessTakeoverMessage(ctx context.Context, failedNodeID node.NodeID, senderNodeID node.NodeID, senderZoneVolume float64, failedZone *node.Zone) (bool, float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	// Two zones are neighbors if they share a (d-1)-dimensional hyperplane
-	adjacentCount := 0
-	nonOverlapCount := 0
+	// Calculate our zone volume
+	ourVolume := calculateZoneVolume(s.Node.Zone)
 
-	for i := 0; i < dimensions; i++ {
-		// Check if the zones are adjacent along dimension i
-		if zone1.MaxPoint[i] == zone2.MinPoint[i] || zone1.MinPoint[i] == zone2.MaxPoint[i] {
-			adjacentCount++
+	// If the sender's zone is smaller than ours, we should accept their takeover
+	if senderZoneVolume < ourVolume {
+		// Cancel our timer if we have one
+		info := s.FailureCoordination[failedNodeID]
+		if info != nil {
+			info.TimerCancelled = true
+			if timer := s.takeoverTimers[failedNodeID]; timer != nil {
+				timer.Stop()
+				delete(s.takeoverTimers, failedNodeID)
+			}
 		}
 
-		// Check if the zones overlap along dimension i
-		if zone1.MinPoint[i] >= zone2.MaxPoint[i] || zone1.MaxPoint[i] <= zone2.MinPoint[i] {
-			nonOverlapCount++
-		}
+		log.Printf("Accepting takeover from %s for node %s (their volume: %f, our volume: %f)",
+			senderNodeID, failedNodeID, senderZoneVolume, ourVolume)
+
+		// Accept their takeover
+		return true, ourVolume
 	}
 
-	// Zones are neighbors if they are adjacent along exactly one dimension
-	// and have overlap in all other dimensions
-	return adjacentCount == 1 && nonOverlapCount == 1
+	// Our zone is smaller, so we reject their takeover
+	log.Printf("Rejecting takeover from %s for node %s (their volume: %f, our volume: %f)",
+		senderNodeID, failedNodeID, senderZoneVolume, ourVolume)
+
+	return false, ourVolume
 }
 
 // Join joins an existing CAN network
 func (s *CANServer) Join(ctx context.Context, entryNodeAddress string) error {
-	// We need to find the node responsible for a random point
 	// Generate a random point in the coordinate space
 	randPoint := make(node.Point, s.Config.Dimensions)
 	for i := 0; i < s.Config.Dimensions; i++ {
@@ -410,7 +519,7 @@ func (s *CANServer) Join(ctx context.Context, entryNodeAddress string) error {
 	}
 	defer conn.Close()
 
-	// First find the node responsible for the random point
+	// Find the node responsible for the random point
 	findReq := &pb.FindNodeRequest{
 		Target: &pb.FindNodeRequest_Point{
 			Point: &pb.Point{
@@ -424,12 +533,12 @@ func (s *CANServer) Join(ctx context.Context, entryNodeAddress string) error {
 		return fmt.Errorf("failed to find responsible node: %w", err)
 	}
 
-	// If the entry node is responsible, join directly
+	// Get the address of the node responsible for the random point
 	var responsibleNodeAddress string
 	if findResp.IsResponsible {
 		responsibleNodeAddress = entryNodeAddress
 	} else {
-		// Otherwise, connect to the responsible node
+		// Connect to the responsible node
 		responsibleNodeAddress = findResp.ResponsibleNode.Address
 	}
 
@@ -477,6 +586,9 @@ func (s *CANServer) Join(ctx context.Context, entryNodeAddress string) error {
 	}
 	s.Node.Zone = newZone
 
+	// Track new neighbors
+	newNeighbors := make(map[node.NodeID]*node.NeighborInfo)
+
 	// Add neighbors from the response
 	for _, nbrInfo := range joinResp.Neighbors {
 		nodeID := node.NodeID(nbrInfo.Id)
@@ -493,31 +605,42 @@ func (s *CANServer) Join(ctx context.Context, entryNodeAddress string) error {
 			return fmt.Errorf("failed to create zone for neighbor: %w", err)
 		}
 
+		// Add to neighbors map
+		neighborInfo := &node.NeighborInfo{
+			ID:      nodeID,
+			Address: nbrInfo.Address,
+			Zone:    zone,
+		}
+
 		s.Node.AddNeighbor(nodeID, nbrInfo.Address, zone)
+		newNeighbors[nodeID] = neighborInfo
 	}
 
 	// Store data from the response
 	for key, value := range joinResp.Data {
 		// Store the key-value pair
 		s.Node.Put(key, string(value))
+
+		// Also store in persistent storage if available
+		if s.Store != nil {
+			if err := s.Store.Put(key, value); err != nil {
+				log.Printf("Warning: failed to store key %s in persistent storage: %v", key, err)
+			}
+		}
 	}
 	s.mu.Unlock()
 
-	// Notify new neighbors about our presence
-	for nodeID, nbrInfo := range s.Node.GetNeighbors() {
-		if nodeID == node.NodeID(joinResp.Neighbors[0].Id) {
-			// Skip the node we just split from, it already knows about us
-			continue
-		}
-
+	// Notify all potential neighbors about our presence
+	// This helps update routing tables and ensures proper network connectivity
+	for _, neighborInfo := range newNeighbors {
 		// Connect to the neighbor
-		nbrClient, nbrConn, err := ConnectToNode(ctx, nbrInfo.Address)
+		nbrClient, nbrConn, err := ConnectToNode(ctx, neighborInfo.Address)
 		if err != nil {
-			log.Printf("Warning: failed to connect to neighbor %s: %v", nodeID, err)
+			log.Printf("Warning: failed to connect to neighbor %s: %v", neighborInfo.ID, err)
 			continue
 		}
 
-		// Send update neighbors request
+		// Send update neighbors request with our info
 		updateReq := &pb.UpdateNeighborsRequest{
 			NodeId: string(s.Node.ID),
 			Neighbors: []*pb.NodeInfo{
@@ -539,7 +662,7 @@ func (s *CANServer) Join(ctx context.Context, entryNodeAddress string) error {
 		_, err = nbrClient.UpdateNeighbors(ctx, updateReq)
 		nbrConn.Close()
 		if err != nil {
-			log.Printf("Warning: failed to update neighbor %s: %v", nodeID, err)
+			log.Printf("Warning: failed to update neighbor %s: %v", neighborInfo.ID, err)
 		}
 	}
 

@@ -19,6 +19,9 @@ service CANService {
   // Routing operations
   rpc FindNode(FindNodeRequest) returns (FindNodeResponse);
   rpc UpdateNeighbors(UpdateNeighborsRequest) returns (UpdateNeighborsResponse);
+  
+  // Fault tolerance operations
+  rpc Takeover(TakeoverRequest) returns (TakeoverResponse);
 }
 
 // Point represents a d-dimensional point in the coordinate space
@@ -137,4 +140,18 @@ message UpdateNeighborsRequest {
 // UpdateNeighborsResponse acknowledges the neighbor update
 message UpdateNeighborsResponse {
   bool success = 1;
+}
+
+// TakeoverRequest is sent when coordinating takeover of a failed node's zone
+message TakeoverRequest {
+  string sender_node_id = 1;
+  string failed_node_id = 2;
+  double zone_volume = 3;
+  Zone failed_zone = 4;
+}
+
+// TakeoverResponse acknowledges a takeover message
+message TakeoverResponse {
+  bool accept_takeover = 1;
+  double responder_zone_volume = 2;
 } 

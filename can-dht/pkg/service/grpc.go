@@ -143,7 +143,7 @@ func (s *GRPCServer) Join(ctx context.Context, req *pb.JoinRequest) (*pb.JoinRes
 		}
 
 		// Check if the neighbor should also be a neighbor of the new node
-		if isZonesAdjacent(newZone, neighborInfo.Zone, s.canServer.Router.Dimensions) {
+		if checkZonesAdjacent(newZone, neighborInfo.Zone, s.canServer.Router.Dimensions) {
 			// Add as a neighbor to the new node
 			neighbors = append(neighbors, convertNodeInfoToProto(neighborInfo))
 
@@ -152,7 +152,7 @@ func (s *GRPCServer) Join(ctx context.Context, req *pb.JoinRequest) (*pb.JoinRes
 		}
 
 		// Check if this neighbor is still a neighbor of the current node after split
-		if !isZonesAdjacent(s.canServer.Node.Zone, neighborInfo.Zone, s.canServer.Router.Dimensions) {
+		if !checkZonesAdjacent(s.canServer.Node.Zone, neighborInfo.Zone, s.canServer.Router.Dimensions) {
 			// No longer neighbors, remove from current node
 			s.canServer.Node.RemoveNeighbor(neighborID)
 		}
@@ -468,5 +468,33 @@ func (s *GRPCServer) UpdateNeighbors(ctx context.Context, req *pb.UpdateNeighbor
 
 	return &pb.UpdateNeighborsResponse{
 		Success: true,
+	}, nil
+}
+
+// Takeover handles takeover messages for coordinating failure recovery
+func (s *GRPCServer) Takeover(ctx context.Context, req *pb.TakeoverRequest) (*pb.TakeoverResponse, error) {
+	failedNodeID := node.NodeID(req.FailedNodeId)
+	senderNodeID := node.NodeID(req.SenderNodeId)
+	senderZoneVolume := req.ZoneVolume
+
+	// Get failed node's zone
+	var failedZone *node.Zone
+	if req.FailedZone != nil {
+		var err error
+		failedZone, err = node.NewZone(
+			node.Point(req.FailedZone.MinPoint.Coordinates),
+			node.Point(req.FailedZone.MaxPoint.Coordinates),
+		)
+		if err != nil {
+			return nil, fmt.Errorf("invalid zone in takeover request: %w", err)
+		}
+	}
+
+	// Process the takeover message in the CAN server
+	acceptTakeover, ourVolume := s.canServer.ProcessTakeoverMessage(ctx, failedNodeID, senderNodeID, senderZoneVolume, failedZone)
+
+	return &pb.TakeoverResponse{
+		AcceptTakeover:      acceptTakeover,
+		ResponderZoneVolume: ourVolume,
 	}, nil
 }
