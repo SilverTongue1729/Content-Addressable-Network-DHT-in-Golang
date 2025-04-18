@@ -82,8 +82,9 @@ This project aims to develop a decentralized Distributed Hash Table (DHT) using 
     > 2. *Zones*: Shown as rectangles around each node to indicate partitions.
     > 3. *Key-Value Pairs*: Marked as colored dots within zones.
     > 4. *Routing Paths*: Animated lines showing GET/PUT request paths between nodes.
+    > 5. *Fault Tolerance*: Clearly indicating failed nodes (e.g., different color/icon) and visualizing data replication/recovery if feasible.
     > 
-    > We’ll use Flask (Python) or Gin (Go) for the backend and D3.js for visuals, finalizing the stack after core deliverables are complete. We might add extras like showing failed nodes if time allows, but it’s not set yet.
+    > We’ll use Flask (Python) or Gin (Go) for the backend and D3.js for visuals, finalizing the stack after core deliverables are complete. Visualization of fault tolerance mechanisms is a core goal.
     > 
 
 # 3. Technology Stack

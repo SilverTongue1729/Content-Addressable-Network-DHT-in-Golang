@@ -165,6 +165,23 @@
         #kv-operations {
             margin-top: 20px;
         }
+        
+        /* Button disabled state styling */
+        .disabled-btn {
+            opacity: 0.6;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+        
+        /* Force-enable class to override Bootstrap disabled state */
+        .force-enable {
+            opacity: 1 !important;
+            cursor: pointer !important;
+            pointer-events: auto !important;
+            background-color: #28a745 !important;
+            border-color: #28a745 !important;
+            color: white !important;
+        }
     </style>
 </head>
 <body>
@@ -256,6 +273,33 @@
                             <div class="col-md-6">
                                 <button id="get-btn" class="btn btn-info">GET</button>
                                 <button id="delete-btn" class="btn btn-danger">DELETE</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <h5>Fault Tolerance</h5>
+                        <div class="row mb-3">
+                            <div class="col-md-6">
+                                <div class="input-group">
+                                    <span class="input-group-text">Node</span>
+                                    <select id="node-select" class="form-select">
+                                        <option value="">Select a node...</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <button id="fail-node-btn" class="btn btn-danger">Fail Node</button>
+                                <button id="recover-node-btn" class="btn btn-success">Recover Node</button>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-12">
+                                <div class="form-text mb-2">
+                                    Simulate node failures and recoveries to test fault tolerance
+                                </div>
+                                <div id="fault-tolerance-status" class="alert alert-info d-none">
+                                    Status information will appear here
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -442,49 +486,73 @@
             fetch("/api/state")
                 .then(response => response.json())
                 .then(data => {
-                    // ===== EXTENSIVE DEBUGGING =====
-                    console.log("========= RECEIVED STATE DATA =========");
-                    console.log(`Total nodes: ${data.nodes.length}`);
-                    console.log(`Total key-value pairs: ${data.keyValuePairs.length}`);
+                    console.log('========== RECEIVED STATE DATA ==========');
+                    console.log('Raw response data:', data);
                     
-                    // Debug: Print all key-value pairs
-                    console.log("KEY-VALUE PAIRS RECEIVED FROM SERVER:");
-                    data.keyValuePairs.forEach((kv, index) => {
-                        const type = kv.IsPrimaryCopy ? "PRIMARY" : "REPLICA";
-                        console.log(`[${index}] ${type} KEY: ${kv.Key}, Value: ${kv.Value}, Node: ${kv.NodeID}, Point: (${kv.Point[0].toFixed(3)}, ${kv.Point[1].toFixed(3)})`);
-                        
-                        if (kv.IsPrimaryCopy && kv.ReplicaNodes && kv.ReplicaNodes.length > 0) {
-                            console.log(`   Has ${kv.ReplicaNodes.length} replica(s): ${kv.ReplicaNodes.join(', ')}`);
+                    // Check the format of failedNodes from server
+                    console.log('Failed nodes from server:', data.failedNodes);
+                    console.log('Type of failedNodes:', typeof data.failedNodes);
+                    console.log('Is array?', Array.isArray(data.failedNodes));
+                    
+                    // Ensure failedNodes is properly initialized as an array
+                    if (!data.failedNodes) {
+                        console.log('No failedNodes in response, initializing empty array');
+                        data.failedNodes = [];
+                    } else if (!Array.isArray(data.failedNodes)) {
+                        console.log('failedNodes is not an array, converting to array');
+                        // Convert to array if it's not already one
+                        if (typeof data.failedNodes === 'object') {
+                            data.failedNodes = Object.keys(data.failedNodes);
+                        } else {
+                            data.failedNodes = [data.failedNodes];
                         }
-                    });
+                    }
                     
-                    // Store the data in state
-                    state.nodes = data.nodes;
-                    state.keyValuePairs = data.keyValuePairs;
-                    state.routingPaths = data.routingPaths;
-                    state.replicationFactor = data.replicationFactor || 1;
+                    // Update state
+                    state = data;
                     
-                    // Log primary vs replica counts
-                    const primaryKeys = state.keyValuePairs.filter(kv => kv.IsPrimaryCopy);
-                    const replicaKeys = state.keyValuePairs.filter(kv => !kv.IsPrimaryCopy);
+                    console.log('Final state.failedNodes:', state.failedNodes);
+                    console.log('Number of failed nodes:', state.failedNodes.length);
                     
-                    console.log(`SUMMARY: ${primaryKeys.length} primary keys, ${replicaKeys.length} replica keys`);
-                    
-                    if (replicaKeys.length > 0) {
-                        console.log("REPLICA KEYS FOUND:");
-                        replicaKeys.forEach((kv, idx) => {
-                            console.log(`  [${idx}] Key: ${kv.Key}, Node: ${kv.NodeID}, Point: (${kv.Point[0].toFixed(3)}, ${kv.Point[1].toFixed(3)})`);
+                    // Log each failed node separately for clarity
+                    if (state.failedNodes.length > 0) {
+                        console.log('Failed nodes:');
+                        state.failedNodes.forEach((nodeId, idx) => {
+                            console.log(`[${idx}] ${nodeId} (type: ${typeof nodeId})`);
                         });
                     } else {
-                        console.log("WARNING: NO REPLICA KEYS FOUND!");
+                        console.log('No failed nodes');
                     }
-                    console.log("======================================");
-
-                    // Update visualization with the new data
+                    
+                    // Apply special styling to keys on failed nodes
+                    highlightKeysOnFailedNodes();
+                    
+                    // Redraw visualization
                     updateVisualization();
+                    
+                    // Update node select dropdown for fault tolerance
+                    updateNodeSelect();
+                    
+                    // Check if currently selected node is failed and force update buttons
+                    const nodeSelect = document.getElementById('node-select');
+                    if (nodeSelect && nodeSelect.value) {
+                        const selectedNodeId = nodeSelect.value;
+                        const isFailed = state.failedNodes.some(failedId => 
+                            String(failedId) === String(selectedNodeId)
+                        );
+                        
+                        console.log(`Currently selected node ${selectedNodeId} is ${isFailed ? 'FAILED' : 'ACTIVE'}`);
+                        
+                        // Force update button states based on node status
+                        forceUpdateButtonsForFailedNode(selectedNodeId, isFailed);
+                    }
+                    
+                    // Show system info
                     updateInfoPanel();
                 })
-                .catch(error => console.error("Error fetching state:", error));
+                .catch(err => {
+                    console.error('Error fetching state:', err);
+                });
         }
         
         // Update the visualization based on current state
@@ -545,9 +613,10 @@
                 .attr("cx", d => xAxis((d.zone.MinPoint[0] + d.zone.MaxPoint[0]) / 2))
                 .attr("cy", d => yAxis((d.zone.MinPoint[1] + d.zone.MaxPoint[1]) / 2))
                 .attr("r", config.nodeRadius)
-                .attr("fill", "#007BFF")
+                .attr("fill", d => state.failedNodes && state.failedNodes.includes(d.id) ? "#f44336" : "#007BFF")
                 .attr("stroke", "#fff")
                 .attr("stroke-width", 2)
+                .attr("stroke-dasharray", d => state.failedNodes && state.failedNodes.includes(d.id) ? "5,5" : "none")
                 .on("mouseover", function(event, d) {
                     d3.select(this).attr("r", config.nodeRadius * 1.2);
                     showTooltip(event, `Node: ${d.id}`);
@@ -573,7 +642,7 @@
             nodeLabels.merge(newNodeLabels)
                 .attr("x", d => xAxis((d.zone.MinPoint[0] + d.zone.MaxPoint[0]) / 2))
                 .attr("y", d => yAxis((d.zone.MinPoint[1] + d.zone.MaxPoint[1]) / 2) - config.nodeRadius - 5)
-                .text(d => d.id)
+                .text(d => d.id + (state.failedNodes && state.failedNodes.includes(d.id) ? " (FAILED)" : ""))
                 .attr("text-anchor", "middle");
             
             // Update key-value pairs
@@ -588,6 +657,9 @@
             const newKeys = keys.enter()
                 .append("circle")
                 .attr("class", d => d.IsPrimaryCopy ? "key primary" : "key replica");
+            
+            // Process failed nodes with the updateNodesForFaultTolerance function
+            updateNodesForFaultTolerance(nodes.merge(newNodes));
             
             console.log(`Adding ${newKeys.size()} new keys`);
             
@@ -624,9 +696,25 @@
                 .on("mouseover", function(event, d) {
                     d3.select(this).attr("r", d.IsPrimaryCopy ? config.keyRadius * 1.5 : config.replicaKeyRadius * 1.5);
                     let tooltipText = `Key: ${d.Key}<br>Value: ${d.Value}`;
+                    
                     if (d.Encrypted) {
                         tooltipText += '<br><span class="encrypted-pill">ENCRYPTED</span>';
                     }
+                    
+                    if (d.onFailedNode) {
+                        tooltipText += '<br><span style="color:#f44336;font-weight:bold;">⚠️ ON FAILED NODE</span>';
+                        
+                        if (d.IsPrimaryCopy) {
+                            if (d.hasHealthyReplica) {
+                                tooltipText += '<br><span style="color:#ff9800;">This key has healthy replicas available</span>';
+                            } else {
+                                tooltipText += '<br><span style="color:#f44336;">No healthy replicas available!</span>';
+                            }
+                        } else {
+                            tooltipText += '<br><span style="color:#ff9800;">This is a replica on a failed node</span>';
+                        }
+                    }
+                    
                     if (!d.IsPrimaryCopy) {
                         tooltipText += '<br><span class="replica-pill">REPLICA</span>';
                         tooltipText += `<br>Primary Node: ${d.ReplicaOf || "Unknown"}`;
@@ -1379,28 +1467,54 @@
         
         // Reset the simulation
         function resetSimulation() {
-            // Clear any existing preview
-            clearJoinPreview();
+            // Basic visual feedback
+            const resetBtn = document.getElementById("reset-btn");
+            resetBtn.disabled = true;
+            resetBtn.textContent = "Resetting...";
             
-            // Clear any existing path visualizations immediately
-            pathsGroup.selectAll("*").remove();
+            document.getElementById("last-action").textContent = "Resetting simulation...";
             
+            // Clear any existing visualization items
+            try {
+                clearJoinPreview(); // Clear any join preview
+                pathsGroup.selectAll("*").remove();
+            } catch (e) {
+                console.error("Error clearing visualization:", e);
+            }
+            
+            // Simple fetch request without timeout signal
             fetch("/api/reset", {
-                method: "POST"
+                method: "POST",
+                headers: {"Content-Type": "application/json"}
             })
             .then(response => response.json())
             .then(data => {
-                document.getElementById("last-action").textContent = "Reset simulation";
-                // Clear selected entity
+                // Reset state variables
                 state.selectedEntity = null;
-                // Clear join points
                 state.joinPoints = {};
-                // Clear routing paths
                 state.routingPaths = [];
                 
+                // Clear input fields
+                document.getElementById("put-key-input").value = "";
+                document.getElementById("put-value-input").value = "";
+                document.getElementById("get-key-input").value = "";
+                document.getElementById("encrypt-checkbox").checked = false;
+                
+                // Update UI
+                document.getElementById("last-action").textContent = "Simulation reset complete";
+                
+                // Refresh the state
                 fetchState();
             })
-            .catch(error => console.error("Error resetting simulation:", error));
+            .catch(error => {
+                console.error("Reset error:", error);
+                document.getElementById("last-action").textContent = "Reset failed - please refresh the page";
+            })
+            .finally(() => {
+                // Re-enable button
+                resetBtn.disabled = false;
+                resetBtn.textContent = "Reset Simulation";
+            });
         }
         
         // Put key-value pair
@@ -1437,26 +1551,66 @@
                 return;
             }
             
+            document.getElementById("last-action").innerHTML = `Processing GET request for key "${key}"...`;
+            
             fetch(`/api/kv/get/${key}`)
             .then(response => {
                 if (response.status === 404) {
                     throw new Error("Key not found");
                 }
+                if (response.status === 503) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || "Key unavailable due to node failure");
+                    });
+                }
                 return response.json();
             })
             .then(data => {
-                document.getElementById("last-action").textContent = `GET: Key="${key}", Value="${data.value}"`;
+                console.log("GET response:", data);
+                
+                let message = `GET: Key="${key}", Value="${data.value}"`;
+                
+                // Show if the value was retrieved from a replica
+                if (data.fromReplica) {
+                    message += `<br><span style="color:#ff9800;font-weight:bold;">⚠️ Retrieved from replica on node ${data.node}</span>`;
+                    message += `<br><span style="color:#666;">Primary node is failed, using replica for fault tolerance</span>`;
+                }
+                
+                document.getElementById("last-action").innerHTML = message;
                 document.getElementById("put-value-input").value = data.value;
+                
                 // Checkbox should reflect the encryption status of the key
                 document.getElementById("encrypt-checkbox").checked = data.encrypted || false;
+                
                 // Also update the put-key-input for convenience
                 document.getElementById("put-key-input").value = key;
+                
                 fetchState();
             })
             .catch(error => {
                 console.error("Error getting key-value:", error);
-                document.getElementById("last-action").textContent = `GET: Key="${key}" - Not found`;
-                alert("Key not found");
+                let errorMsg = `<span style="color:#f44336;font-weight:bold;">GET ERROR: ${error.message}</span>`;
+                
+                if (error.message.includes("unavailable") || error.message.includes("failed")) {
+                    errorMsg += `<br><span style="color:#666;">This key is unavailable because its primary node has failed.</span>`;
+                    
+                    if (error.message.includes("no replicas were created")) {
+                        errorMsg += `<br><span style="color:#ff9800;font-weight:bold;">No replicas were created for this key before the node failed.</span>`;
+                        errorMsg += `<br><span style="color:#666;">To enable fault tolerance, you must replicate keys BEFORE nodes fail:</span>`;
+                        errorMsg += `<ol style="color:#666;margin-top:5px;">
+                            <li>Select the key you want to replicate</li>
+                            <li>Enter a replication factor (e.g., 2) under "Replicate Key"</li>
+                            <li>Click the "Replicate" button</li>
+                            <li>Then you can safely fail nodes while maintaining access to the key</li>
+                        </ol>`;
+                    } else if (error.message.includes("all replicas are also on failed nodes")) {
+                        errorMsg += `<br><span style="color:#ff9800;font-weight:bold;">All replica nodes for this key have also failed.</span>`;
+                        errorMsg += `<br><span style="color:#666;">For better fault tolerance, replicate keys to more nodes.</span>`;
+                    }
+                }
+                
+                document.getElementById("last-action").innerHTML = errorMsg;
+                alert("Error: " + error.message);
             });
         }
         
@@ -1479,20 +1633,10 @@
                 return response.json();
             })
             .then(data => {
-                console.log("Delete response:", data);
-                
-                let statusMessage;
-                if (data.replicasCount > 0) {
-                    statusMessage = `DELETE: Key="${key}" deleted from primary and ${data.replicasCount} replica(s). Total entries removed: ${data.totalDeleted}`;
-                } else {
-                    statusMessage = `DELETE: Key="${key}" deleted (no replicas)`;
-                }
-                
-                document.getElementById("last-action").textContent = statusMessage;
+                document.getElementById("last-action").textContent = `DELETE: Key="${key}"`;
                 document.getElementById("put-value-input").value = "";
                 document.getElementById("put-key-input").value = "";
                 document.getElementById("encrypt-checkbox").checked = false;
-                document.getElementById("get-key-input").value = "";
                 fetchState();
             })
             .catch(error => {
@@ -1536,6 +1680,33 @@
             document.getElementById("set-replication-btn").addEventListener("click", setReplicationFactor);
             document.getElementById("replicate-key-btn").addEventListener("click", replicateKey);
             
+            // Attach fault tolerance button handlers here
+            document.getElementById("fail-node-btn").addEventListener("click", function() {
+                const nodeId = document.getElementById('node-select').value;
+                if (nodeId) {
+                    failNode(nodeId);
+                } else {
+                    // Show a message if no node is selected
+                    const statusEl = document.getElementById('fault-tolerance-status');
+                    statusEl.textContent = 'Please select a node first';
+                    statusEl.classList.remove('d-none', 'alert-success', 'alert-danger');
+                    statusEl.classList.add('alert-warning');
+                }
+            });
+            
+            document.getElementById("recover-node-btn").addEventListener("click", function() {
+                const nodeId = document.getElementById('node-select').value;
+                if (nodeId) {
+                    recoverNode(nodeId);
+                } else {
+                    // Show a message if no node is selected
+                    const statusEl = document.getElementById('fault-tolerance-status');
+                    statusEl.textContent = 'Please select a node first';
+                    statusEl.classList.remove('d-none', 'alert-success', 'alert-danger');
+                    statusEl.classList.add('alert-warning');
+                }
+            });
+            
             // Fetch initial state
             fetchState();
             
@@ -1545,6 +1716,534 @@
         
         // Start the application when DOM is loaded
         document.addEventListener("DOMContentLoaded", init);
+
+        // Fault Tolerance Functionality
+        function updateNodeSelect() {
+            console.log("===== UPDATE NODE SELECT =====");
+            const nodeSelect = document.getElementById('node-select');
+            const currentSelection = nodeSelect.value;
+            console.log("Current selection:", currentSelection);
+            console.log("Failed nodes:", state.failedNodes);
+            
+            // Clear select options
+            nodeSelect.innerHTML = '';
+            
+            // Add an empty option for guidance
+            const emptyOption = document.createElement('option');
+            emptyOption.value = '';
+            emptyOption.textContent = '--- Select a node ---';
+            nodeSelect.appendChild(emptyOption);
+            
+            // Add options for each node
+            if (state.nodes && Array.isArray(state.nodes)) {
+                state.nodes.forEach(node => {
+                    const option = document.createElement('option');
+                    option.value = node.id;
+                    
+                    // Check if this node is in the failedNodes array
+                    let isFailed = false;
+                    if (state.failedNodes && Array.isArray(state.failedNodes)) {
+                        console.log(`Checking if node ${node.id} is failed`);
+                        isFailed = state.failedNodes.some(failedId => {
+                            console.log(`  - Comparing with failed ID: ${failedId} (${typeof failedId}) vs ${node.id} (${typeof node.id})`);
+                            const match = String(failedId) === String(node.id);
+                            console.log(`  - Match: ${match}`);
+                            return match;
+                        });
+                    }
+                    
+                    // Mark failed nodes in the dropdown text
+                    if (isFailed) {
+                        option.textContent = `${node.id} (Failed)`;
+                        option.setAttribute('data-failed', 'true');
+                        console.log(`Marking node ${node.id} as failed (data-failed=true)`);
+                    } else {
+                        option.textContent = `${node.id}`;
+                        option.setAttribute('data-failed', 'false');
+                        console.log(`Marking node ${node.id} as active (data-failed=false)`);
+                    }
+                    
+                    nodeSelect.appendChild(option);
+                });
+            }
+            
+            // Restore previous selection if possible
+            if (currentSelection) {
+                for (let i = 0; i < nodeSelect.options.length; i++) {
+                    if (nodeSelect.options[i].value === currentSelection) {
+                        nodeSelect.selectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            
+            // If no option is selected, select the first one
+            if (nodeSelect.selectedIndex <= 0 && nodeSelect.options.length > 1) {
+                nodeSelect.selectedIndex = 1;
+            }
+            
+            // Log the current selected option
+            const selectedOption = nodeSelect.options[nodeSelect.selectedIndex];
+            if (selectedOption && selectedOption.value) {
+                console.log("Selected option:", selectedOption.textContent);
+                console.log("Selected option data-failed:", selectedOption.getAttribute('data-failed'));
+            }
+            
+            // Manually trigger change event to update UI
+            const event = new Event('change');
+            nodeSelect.dispatchEvent(event);
+            
+            // Update button states based on the current selection
+            updateButtonStates();
+        }
+
+        // Simplified function to update button states
+        function updateButtonStates() {
+            console.log("===== UPDATE BUTTON STATES =====");
+            const nodeSelect = document.getElementById('node-select');
+            const selectedNodeId = nodeSelect.value;
+            
+            // Get the buttons
+            const failBtn = document.getElementById('fail-node-btn');
+            const recoverBtn = document.getElementById('recover-node-btn');
+            
+            console.log("Selected node ID:", selectedNodeId);
+            
+            // Disable all buttons if no node is selected
+            if (!selectedNodeId) {
+                console.log("No node selected, disabling all buttons");
+                if (failBtn) {
+                    failBtn.disabled = true;
+                    failBtn.setAttribute('disabled', 'disabled');
+                    failBtn.classList.add('disabled-btn');
+                    failBtn.classList.add('disabled');
+                    failBtn.classList.remove('force-enable');
+                }
+                if (recoverBtn) {
+                    recoverBtn.disabled = true;
+                    recoverBtn.setAttribute('disabled', 'disabled');
+                    recoverBtn.classList.add('disabled-btn');
+                    recoverBtn.classList.add('disabled');
+                    recoverBtn.classList.remove('force-enable');
+                }
+                return;
+            }
+            
+            // Check if the selected node is in the failed nodes array
+            let isFailed = false;
+            if (state.failedNodes && Array.isArray(state.failedNodes)) {
+                isFailed = state.failedNodes.some(failedId => 
+                    String(failedId) === String(selectedNodeId)
+                );
+            }
+            
+            console.log("Is node failed:", isFailed);
+            
+            // IMPORTANT: When a node is failed, we want to:
+            // 1. Disable the fail button (can't fail an already failed node)
+            // 2. Enable the recover button (allow recovery of a failed node)
+            
+            // Handle fail button
+            if (failBtn) {
+                if (isFailed) {
+                    // Disable fail button for failed nodes
+                    console.log("DISABLING fail button for failed node:", selectedNodeId);
+                    failBtn.disabled = true;
+                    failBtn.setAttribute('disabled', 'disabled');
+                    failBtn.classList.add('disabled-btn');
+                    failBtn.classList.add('disabled');
+                    failBtn.classList.remove('force-enable');
+                } else {
+                    // Enable fail button for active nodes
+                    console.log("ENABLING fail button for active node:", selectedNodeId);
+                    failBtn.disabled = false;
+                    failBtn.removeAttribute('disabled');
+                    failBtn.classList.remove('disabled-btn');
+                    failBtn.classList.remove('disabled');
+                }
+            }
+            
+            // Handle recover button
+            if (recoverBtn) {
+                if (isFailed) {
+                    // Enable recover button for failed nodes with strong override
+                    console.log("ENABLING recover button for failed node:", selectedNodeId);
+                    recoverBtn.disabled = false;
+                    recoverBtn.removeAttribute('disabled');
+                    recoverBtn.classList.remove('disabled-btn');
+                    recoverBtn.classList.remove('disabled');
+                    recoverBtn.classList.add('force-enable');  // Add extra force-enable class
+                    
+                    // Forcefully enable with direct style
+                    recoverBtn.style.pointerEvents = 'auto';
+                    recoverBtn.style.cursor = 'pointer';
+                    recoverBtn.style.opacity = '1';
+                } else {
+                    // Disable recover button for active nodes
+                    console.log("DISABLING recover button for active node:", selectedNodeId);
+                    recoverBtn.disabled = true;
+                    recoverBtn.setAttribute('disabled', 'disabled');
+                    recoverBtn.classList.add('disabled-btn');
+                    recoverBtn.classList.add('disabled');
+                    recoverBtn.classList.remove('force-enable');
+                    
+                    // Reset any direct styles
+                    recoverBtn.style.pointerEvents = '';
+                    recoverBtn.style.cursor = '';
+                    recoverBtn.style.opacity = '';
+                }
+            }
+            
+            // Log final states
+            console.log("Final fail button state:", failBtn ? (failBtn.disabled ? "DISABLED" : "ENABLED") : "N/A");
+            console.log("Final recover button state:", recoverBtn ? (recoverBtn.disabled ? "DISABLED" : "ENABLED") : "N/A");
+        }
+
+        // Function to directly force button states after a node fails or recovers
+        function forceUpdateButtonsForFailedNode(nodeId, isFailed) {
+            console.log(`FORCE UPDATE: Setting node ${nodeId} to ${isFailed ? 'FAILED' : 'ACTIVE'} state`);
+            
+            const failBtn = document.getElementById('fail-node-btn');
+            const recoverBtn = document.getElementById('recover-node-btn');
+            
+            if (failBtn && recoverBtn) {
+                if (isFailed) {
+                    // Node is failed - disable fail button, enable recover button
+                    console.log("FORCE: Disabling fail button, enabling recover button");
+                    
+                    // Disable fail button
+                    failBtn.disabled = true;
+                    failBtn.setAttribute('disabled', 'disabled');
+                    failBtn.classList.add('disabled');
+                    
+                    // Enable recover button with !important override
+                    recoverBtn.disabled = false;
+                    recoverBtn.removeAttribute('disabled');
+                    recoverBtn.classList.remove('disabled');
+                    recoverBtn.classList.add('force-enable');
+                    
+                    // Apply direct styles
+                    recoverBtn.style.opacity = '1';
+                    recoverBtn.style.cursor = 'pointer';
+                    recoverBtn.style.pointerEvents = 'auto';
+                } else {
+                    // Node is active - enable fail button, disable recover button
+                    console.log("FORCE: Enabling fail button, disabling recover button");
+                    
+                    // Enable fail button
+                    failBtn.disabled = false;
+                    failBtn.removeAttribute('disabled');
+                    failBtn.classList.remove('disabled');
+                    
+                    // Disable recover button
+                    recoverBtn.disabled = true;
+                    recoverBtn.setAttribute('disabled', 'disabled');
+                    recoverBtn.classList.add('disabled');
+                    recoverBtn.classList.remove('force-enable');
+                    
+                    // Reset direct styles
+                    recoverBtn.style.opacity = '';
+                    recoverBtn.style.cursor = '';
+                    recoverBtn.style.pointerEvents = '';
+                }
+            }
+        }
+
+        // Function to fail a node
+        async function failNode(nodeId) {
+            try {
+                // Show status
+                const statusEl = document.getElementById('fault-tolerance-status');
+                statusEl.textContent = `Attempting to fail node ${nodeId}...`;
+                statusEl.classList.remove('d-none', 'alert-success', 'alert-danger');
+                statusEl.classList.add('alert-info');
+                
+                const response = await fetch(`/api/node/fail/${nodeId}`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    console.log(`Node ${nodeId} marked as failed`);
+                    document.getElementById("last-action").textContent = `Node ${nodeId} marked as failed`;
+                    
+                    // Show success status
+                    statusEl.textContent = `Node ${nodeId} has been marked as FAILED successfully.`;
+                    statusEl.classList.remove('alert-info', 'alert-danger');
+                    statusEl.classList.add('alert-success');
+                    
+                    // Update button states immediately
+                    const nodeSelect = document.getElementById('node-select');
+                    const option = Array.from(nodeSelect.options).find(opt => opt.value === nodeId);
+                    if (option) {
+                        option.setAttribute('data-failed', 'true');
+                        option.textContent = `${nodeId} (Failed)`;
+                    }
+                    
+                    // Force update button states
+                    forceUpdateButtonsForFailedNode(nodeId, true);
+                    
+                    // Refresh the state and UI
+                    fetchState();
+                } else {
+                    const errorText = await response.text();
+                    console.error('Error failing node:', errorText);
+                    
+                    // Show error status
+                    statusEl.textContent = `Error failing node: ${errorText}`;
+                    statusEl.classList.remove('alert-info', 'alert-success');
+                    statusEl.classList.add('alert-danger');
+                }
+            } catch (error) {
+                console.error('Error failing node:', error);
+                
+                // Show error status
+                const statusEl = document.getElementById('fault-tolerance-status');
+                statusEl.textContent = `Error failing node: ${error.message}`;
+                statusEl.classList.remove('alert-info', 'alert-success', 'd-none');
+                statusEl.classList.add('alert-danger');
+            }
+        }
+
+        // Function to recover a node
+        async function recoverNode(nodeId) {
+            try {
+                // Show status
+                const statusEl = document.getElementById('fault-tolerance-status');
+                statusEl.textContent = `Attempting to recover node ${nodeId}...`;
+                statusEl.classList.remove('d-none', 'alert-success', 'alert-danger');
+                statusEl.classList.add('alert-info');
+                
+                const response = await fetch(`/api/node/recover/${nodeId}`, {
+                    method: 'POST'
+                });
+                
+                if (response.ok) {
+                    console.log(`Node ${nodeId} has recovered`);
+                    document.getElementById("last-action").textContent = `Node ${nodeId} has recovered`;
+                    
+                    // Show success status
+                    statusEl.textContent = `Node ${nodeId} has been RECOVERED successfully.`;
+                    statusEl.classList.remove('alert-info', 'alert-danger');
+                    statusEl.classList.add('alert-success');
+                    
+                    // Update button states immediately
+                    const nodeSelect = document.getElementById('node-select');
+                    const option = Array.from(nodeSelect.options).find(opt => opt.value === nodeId);
+                    if (option) {
+                        option.setAttribute('data-failed', 'false');
+                        option.textContent = `${nodeId}`;
+                    }
+                    
+                    // Force update button states
+                    forceUpdateButtonsForFailedNode(nodeId, false);
+                    
+                    // Refresh the state and UI
+                    fetchState();
+                } else {
+                    const errorText = await response.text();
+                    console.error('Error recovering node:', errorText);
+                    
+                    // Show error status
+                    statusEl.textContent = `Error recovering node: ${errorText}`;
+                    statusEl.classList.remove('alert-info', 'alert-success');
+                    statusEl.classList.add('alert-danger');
+                }
+            } catch (error) {
+                console.error('Error recovering node:', error);
+                
+                // Show error status
+                const statusEl = document.getElementById('fault-tolerance-status');
+                statusEl.textContent = `Error recovering node: ${error.message}`;
+                statusEl.classList.remove('alert-info', 'alert-success', 'd-none');
+                statusEl.classList.add('alert-danger');
+            }
+        }
+
+        // Add event listener for node select to update status display
+        document.getElementById('node-select').addEventListener('change', function() {
+            const nodeId = this.value;
+            if (!nodeId) return;
+            
+            console.log("=== NODE SELECT CHANGED ===");
+            console.log("Selected node ID:", nodeId);
+            
+            const statusEl = document.getElementById('fault-tolerance-status');
+            const selectedOption = this.options[this.selectedIndex];
+            const isFailed = selectedOption.getAttribute('data-failed') === 'true';
+            
+            console.log("Option selected:", selectedOption.textContent);
+            console.log("Is failed (from attribute):", isFailed);
+            console.log("data-failed attribute value:", selectedOption.getAttribute('data-failed'));
+            
+            // Check against state.failedNodes array as well
+            let isInFailedArray = false;
+            if (state.failedNodes && Array.isArray(state.failedNodes)) {
+                isInFailedArray = state.failedNodes.some(failedId => String(failedId) === String(nodeId));
+                console.log("Is in failedNodes array:", isInFailedArray);
+                console.log("failedNodes array:", state.failedNodes);
+            }
+            
+            // Update status message
+            if (isFailed) {
+                statusEl.textContent = `Node ${nodeId} is currently FAILED. You can recover it.`;
+                statusEl.classList.remove('d-none', 'alert-success', 'alert-info');
+                statusEl.classList.add('alert-warning');
+                
+                // Force enable recover button for failed nodes
+                forceUpdateButtonsForFailedNode(nodeId, true);
+            } else {
+                statusEl.textContent = `Node ${nodeId} is ACTIVE. You can simulate failure.`;
+                statusEl.classList.remove('d-none', 'alert-warning', 'alert-danger');
+                statusEl.classList.add('alert-success');
+                
+                // Force disable recover button for active nodes
+                forceUpdateButtonsForFailedNode(nodeId, false);
+            }
+            
+            // Get button elements and log their state after update
+            const failBtn = document.getElementById('fail-node-btn');
+            const recoverBtn = document.getElementById('recover-node-btn');
+            console.log("After direct update - Fail button disabled:", failBtn ? failBtn.disabled : "N/A");
+            console.log("After direct update - Recover button disabled:", recoverBtn ? recoverBtn.disabled : "N/A");
+        });
+
+        // Update visualization for failed nodes
+        function updateNodesForFaultTolerance(nodeElements) {
+            nodeElements.classed('failed-node', d => {
+                return state.failedNodes && state.failedNodes.some(failedNodeId => 
+                    String(failedNodeId) === String(d.id)
+                );
+            });
+            
+            // Add different coloration for failed nodes
+            nodeElements.select('rect')
+                .style('fill', d => {
+                    return state.failedNodes && state.failedNodes.some(failedNodeId => 
+                        String(failedNodeId) === String(d.id)
+                    ) 
+                        ? '#f44336' // Red for failed nodes
+                        : '#4CAF50'; // Green for active nodes
+                })
+                .style('stroke-dasharray', d => {
+                    return state.failedNodes && state.failedNodes.some(failedNodeId => 
+                        String(failedNodeId) === String(d.id)
+                    ) 
+                        ? '5,5' : 'none';
+                });
+                
+            // Update node labels to show failed status
+            nodeElements.select('text')
+                .text(d => {
+                    const isFailed = state.failedNodes && state.failedNodes.some(failedNodeId => 
+                        String(failedNodeId) === String(d.id)
+                    );
+                    return d.id + (isFailed ? ' (FAILED)' : '');
+                });
+        }
+
+        // Add CSS for failed nodes
+        const styleElement = document.createElement('style');
+        styleElement.textContent = `
+            .failed-node rect {
+                fill: #f44336 !important;
+                stroke-dasharray: 5,5;
+                animation: pulse 2s infinite;
+            }
+            
+            @keyframes pulse {
+                0% { opacity: 0.8; }
+                50% { opacity: 0.4; }
+                100% { opacity: 0.8; }
+            }
+        `;
+        document.head.appendChild(styleElement);
+
+        // Update the drawNode function to include fault tolerance visualization
+        function drawNode(node) {
+            const nodeElement = svg.append('g')
+                .attr('class', 'node')
+                .attr('id', `node-${node.id}`);
+            
+            // Check if the node is failed
+            const isFailed = state.failedNodes && state.failedNodes.some(failedNodeId => 
+                String(failedNodeId) === String(node.id)
+            );
+            
+            // Add node zone rectangle
+            nodeElement.append('rect')
+                .attr('x', xAxis(node.zone.minPoint[0]))
+                .attr('y', yAxis(node.zone.minPoint[1]))
+                .attr('width', xAxis(node.zone.maxPoint[0]) - xAxis(node.zone.minPoint[0]))
+                .attr('height', yAxis(node.zone.maxPoint[1]) - yAxis(node.zone.minPoint[1]))
+                .attr('fill', isFailed ? '#f44336' : '#4CAF50')
+                .attr('fill-opacity', 0.3)
+                .attr('stroke', '#333')
+                .attr('stroke-width', 1)
+                .attr('stroke-dasharray', isFailed ? '5,5' : 'none');
+            
+            // Add node label
+            nodeElement.append('text')
+                .attr('class', 'node-label')
+                .attr('x', xAxis((node.zone.minPoint[0] + node.zone.maxPoint[0]) / 2))
+                .attr('y', yAxis((node.zone.minPoint[1] + node.zone.maxPoint[1]) / 2))
+                .text(node.id + (isFailed ? ' (FAILED)' : ''));
+            
+            return nodeElement;
+        }
+
+        // Add function to highlight keys on failed nodes
+        function highlightKeysOnFailedNodes() {
+            if (!state.keyValuePairs || !state.failedNodes) return;
+            
+            // Mark keys on failed nodes for special treatment
+            state.keyValuePairs.forEach(kv => {
+                kv.onFailedNode = state.failedNodes.some(failedNodeId => 
+                    String(failedNodeId) === String(kv.NodeID)
+                );
+                
+                // Check if this key has a healthy replica
+                if (kv.IsPrimaryCopy && kv.onFailedNode) {
+                    kv.hasHealthyReplica = false;
+                    
+                    // Check if any replicas are on healthy nodes
+                    if (kv.ReplicaNodes && kv.ReplicaNodes.length > 0) {
+                        for (const replicaNodeId of kv.ReplicaNodes) {
+                            const replicaIsFailed = state.failedNodes.some(failedNodeId => 
+                                String(failedNodeId) === String(replicaNodeId)
+                            );
+                            
+                            if (!replicaIsFailed) {
+                                kv.hasHealthyReplica = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Extend the key rendering to show keys on failed nodes differently
+        const originalUpdateVisualization = updateVisualization;
+        updateVisualization = function() {
+            // Call the original function
+            originalUpdateVisualization();
+            
+            // Update key styling based on failed node status
+            keysGroup.selectAll('.key')
+                .attr('stroke-width', d => {
+                    if (d.onFailedNode) {
+                        return d.IsPrimaryCopy ? 3 : 2;
+                    }
+                    return d.IsPrimaryCopy ? config.primaryStrokeWidth : config.replicaStrokeWidth;
+                })
+                .attr('stroke', d => {
+                    if (d.onFailedNode) {
+                        return d.hasHealthyReplica ? '#ff9800' : '#f44336'; // Orange if replica exists, red if not
+                    }
+                    return d.IsPrimaryCopy ? config.primaryStroke : config.replicaStroke;
+                })
+                .attr('stroke-dasharray', d => d.onFailedNode ? '3,3' : 'none');
+        };
     </script>
 </body>
 </html> 
