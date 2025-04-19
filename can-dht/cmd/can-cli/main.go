@@ -284,10 +284,25 @@ func decryptValue(username, password, encryptedValue string) (string, error) {
 	// Derive the same key for decryption
 	key := deriveEncryptionKey(username, password)
 
-	// Decrypt using the same algorithm
-	decrypted := simpleEncrypt(encryptedValue, key) // XOR is symmetric, so encryption = decryption
+	// First decode the base64-encoded value
+	decodedValue, err := base64.StdEncoding.DecodeString(encryptedValue)
+	if err != nil {
+		return "", fmt.Errorf("error decoding encrypted value: %w", err)
+	}
 
-	return decrypted, nil
+	// Convert to string for XOR operation
+	decodedString := string(decodedValue)
+
+	// Expand the key to match the length of the decoded value
+	expandedKey := expandKey(key, len(decodedString))
+
+	// Perform XOR decryption (symmetric operation)
+	var result []byte
+	for i := 0; i < len(decodedString); i++ {
+		result = append(result, decodedString[i]^expandedKey[i])
+	}
+
+	return string(result), nil
 }
 
 // deriveEncryptionKey creates a key for encryption/decryption based on username and password
