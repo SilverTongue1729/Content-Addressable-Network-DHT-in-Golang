@@ -2,139 +2,239 @@ syntax = "proto3";
 
 package can;
 
-option go_package = "github.com/can-dht/proto";
+option go_package = "github.com/can-dht/internal/proto";
 
-// CAN service defines the operations for a Content Addressable Network node
+// CANService defines the CAN DHT service
 service CANService {
-  // Node operations
-  rpc Join(JoinRequest) returns (JoinResponse);
-  rpc Leave(LeaveRequest) returns (LeaveResponse);
-  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
-  
-  // Data operations
-  rpc Put(PutRequest) returns (PutResponse);
-  rpc Get(GetRequest) returns (GetResponse);
-  rpc Delete(DeleteRequest) returns (DeleteResponse);
-  
-  // Routing operations
-  rpc FindNode(FindNodeRequest) returns (FindNodeResponse);
-  rpc UpdateNeighbors(UpdateNeighborsRequest) returns (UpdateNeighborsResponse);
+    // Node operations
+    rpc Join(JoinRequest) returns (JoinResponse);
+    rpc Leave(LeaveRequest) returns (LeaveResponse);
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    rpc FindNode(FindNodeRequest) returns (FindNodeResponse);
+    rpc GetNeighbors(GetNeighborsRequest) returns (GetNeighborsResponse);
+
+    // DHT operations
+    rpc Put(PutRequest) returns (PutResponse);
+    rpc Get(GetRequest) returns (GetResponse);
+    rpc Delete(DeleteRequest) returns (DeleteResponse);
+
+    // Multi-hop replication operations
+    rpc ReplicatePut(ReplicatePutRequest) returns (ReplicatePutResponse);
+    rpc ReplicateDelete(ReplicateDeleteRequest) returns (ReplicateDeleteResponse);
+    rpc SyncReplicaMetadata(SyncReplicaMetadataRequest) returns (SyncReplicaMetadataResponse);
+    
+    // Load balancing operations
+    rpc ProposeZoneAdjustment(ZoneAdjustmentProposalRequest) returns (ZoneAdjustmentProposalResponse);
+    rpc TransferKey(TransferKeyRequest) returns (TransferKeyResponse);
 }
 
-// Point represents a d-dimensional point in the coordinate space
+// Point represents a point in the coordinate space
 message Point {
-  repeated double coordinates = 1;
+    repeated double coordinates = 1;
 }
 
-// Zone represents a region in the coordinate space
+// Zone represents a zone in the coordinate space
 message Zone {
-  Point min_point = 1;
-  Point max_point = 2;
+    Point min_point = 1;
+    Point max_point = 2;
 }
 
-// NodeInfo represents information about a node
+// NodeInfo contains information about a node
 message NodeInfo {
-  string id = 1;
-  string address = 2;
-  Zone zone = 3;
+    string id = 1;
+    string address = 2;
+    Zone zone = 3;
 }
 
-// JoinRequest is sent by a node to join the network
+// JoinRequest is sent when a node wants to join the network
 message JoinRequest {
-  string new_node_id = 1;
-  string new_node_address = 2;
-  Point join_point = 3; // Used to determine where in the coordinate space the node joins
+    string new_node_id = 1;
+    string new_node_address = 2;
+    Point join_point = 3;
 }
 
-// JoinResponse contains information needed by the joining node
+// JoinResponse is sent in response to a join request
 message JoinResponse {
-  bool success = 1;
-  Zone assigned_zone = 2;
-  repeated NodeInfo neighbors = 3;
-  map<string, bytes> data = 4; // Key-value pairs that should be transferred to the new node
+    bool success = 1;
+    string message = 2;
+    Zone assigned_zone = 3;
+    repeated NodeInfo neighbors = 4;
+    map<string, bytes> data = 5;
 }
 
-// LeaveRequest is sent by a node when it's about to leave the network
+// LeaveRequest is sent when a node wants to leave the network
 message LeaveRequest {
-  string node_id = 1;
-  map<string, bytes> data = 2; // Key-value pairs that should be transferred to neighbors
+    string node_id = 1;
+    map<string, bytes> data = 2;
 }
 
-// LeaveResponse acknowledges a node's departure
+// LeaveResponse is sent in response to a leave request
 message LeaveResponse {
-  bool success = 1;
+    bool success = 1;
+    string message = 2;
 }
 
 // HeartbeatRequest is sent periodically to check if neighbors are alive
 message HeartbeatRequest {
-  string node_id = 1;
-  int64 timestamp = 2;
+    string node_id = 1;
+    int64 timestamp = 2;
 }
 
 // HeartbeatResponse acknowledges a heartbeat
 message HeartbeatResponse {
-  bool success = 1;
-  int64 timestamp = 2;
-}
-
-// PutRequest is sent to store a key-value pair
-message PutRequest {
-  string key = 1;
-  bytes value = 2;
-  bool forward = 3; // Whether this request should be forwarded to the responsible node
-}
-
-// PutResponse acknowledges a successful put operation
-message PutResponse {
-  bool success = 1;
-}
-
-// GetRequest is sent to retrieve a value by key
-message GetRequest {
-  string key = 1;
-  bool forward = 2; // Whether this request should be forwarded to the responsible node
-}
-
-// GetResponse contains the requested value
-message GetResponse {
-  bool success = 1;
-  bytes value = 2;
-  bool exists = 3;
-}
-
-// DeleteRequest is sent to delete a key-value pair
-message DeleteRequest {
-  string key = 1;
-  bool forward = 2; // Whether this request should be forwarded to the responsible node
-}
-
-// DeleteResponse acknowledges a successful delete operation
-message DeleteResponse {
-  bool success = 1;
-  bool existed = 2;
+    bool success = 1;
+    int64 timestamp = 2;
 }
 
 // FindNodeRequest is sent to find the node responsible for a key or point
 message FindNodeRequest {
-  oneof target {
-    string key = 1;
-    Point point = 2;
-  }
+    oneof target {
+        string key = 1;
+        Point point = 2;
+    }
 }
 
-// FindNodeResponse contains information about the responsible node
+// FindNodeResponse contains information about the node responsible for a key or point
 message FindNodeResponse {
-  bool is_responsible = 1; // True if the responding node is responsible
-  NodeInfo responsible_node = 2; // Information about the responsible node (if not the responding node)
+    bool success = 1;
+    string message = 2;
+    NodeInfo responsible_node = 3;
 }
 
-// UpdateNeighborsRequest is sent to update a node's neighbor list
-message UpdateNeighborsRequest {
-  string node_id = 1;
-  repeated NodeInfo neighbors = 2;
+// GetNeighborsRequest is sent to get a list of a node's neighbors
+message GetNeighborsRequest {
+    string requesting_node_id = 1;
+    int32 max_hops = 2;
 }
 
-// UpdateNeighborsResponse acknowledges the neighbor update
-message UpdateNeighborsResponse {
-  bool success = 1;
+// GetNeighborsResponse contains a list of neighbors
+message GetNeighborsResponse {
+    repeated NeighborEntry neighbors = 1;
+}
+
+// NeighborEntry contains information about a neighbor
+message NeighborEntry {
+    string node_id = 1;
+    string address = 2;
+    repeated double min_coordinates = 3;
+    repeated double max_coordinates = 4;
+}
+
+// PutRequest stores a key-value pair
+message PutRequest {
+    string key = 1;
+    bytes value = 2;
+    bool forward = 3;
+}
+
+// PutResponse is sent in response to a put request
+message PutResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// GetRequest retrieves a value by key
+message GetRequest {
+    string key = 1;
+    bool forward = 2;
+}
+
+// GetResponse is sent in response to a get request
+message GetResponse {
+    bool success = 1;
+    string message = 2;
+    bool exists = 3;
+    bytes value = 4;
+}
+
+// DeleteRequest removes a key-value pair
+message DeleteRequest {
+    string key = 1;
+    bool forward = 2;
+}
+
+// DeleteResponse is sent in response to a delete request
+message DeleteResponse {
+    bool success = 1;
+    string message = 2;
+    bool existed = 3;
+}
+
+// ReplicatePutRequest is used for multi-hop replication of put operations
+message ReplicatePutRequest {
+    string key = 1;
+    bytes value = 2;
+    int32 replication_hop = 3;
+    int32 max_replication_hops = 4;
+    repeated string path = 5;
+    string origin_node_id = 6;
+}
+
+// ReplicatePutResponse acknowledges a replicate put request
+message ReplicatePutResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ReplicateDeleteRequest is used for multi-hop replication of delete operations
+message ReplicateDeleteRequest {
+    string key = 1;
+    int32 replication_hop = 2;
+    int32 max_replication_hops = 3;
+    repeated string path = 4;
+    string origin_node_id = 5;
+}
+
+// ReplicateDeleteResponse acknowledges a replicate delete request
+message ReplicateDeleteResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// SyncReplicaMetadataRequest is used to synchronize replica metadata
+message SyncReplicaMetadataRequest {
+    string node_id = 1;
+    repeated ReplicaMetadataEntry entries = 2;
+}
+
+// ReplicaMetadataEntry contains metadata about a replica
+message ReplicaMetadataEntry {
+    string key = 1;
+    repeated string replica_nodes = 2;
+    int64 version = 3;
+    int64 last_update_time = 4;
+}
+
+// SyncReplicaMetadataResponse acknowledges a metadata sync request
+message SyncReplicaMetadataResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ZoneAdjustmentProposalRequest is sent to propose a zone adjustment
+message ZoneAdjustmentProposalRequest {
+    string proposer_id = 1;
+    string target_id = 2;
+    int32 dimension = 3;
+    double proposed_boundary = 4;
+    double current_load = 5;
+    string proposal_id = 6;
+}
+
+// ZoneAdjustmentProposalResponse is sent in response to a zone adjustment proposal
+message ZoneAdjustmentProposalResponse {
+    bool accepted = 1;
+    string reason = 2;
+}
+
+// TransferKeyRequest is sent to transfer a key during zone adjustment
+message TransferKeyRequest {
+    string key = 1;
+    bytes value = 2;
+}
+
+// TransferKeyResponse is sent in response to a key transfer
+message TransferKeyResponse {
+    bool success = 1;
+    string error = 2;
 } 

@@ -12,6 +12,20 @@ import (
 	"strings"
 )
 
+// KeyManagerInterface defines the interface for key management operations
+type KeyManagerInterface interface {
+	// Encryption and HMAC methods
+	EncryptWithAESGCM(plaintext []byte) ([]byte, error)
+	DecryptWithAESGCM(ciphertext []byte) ([]byte, error)
+	GenerateHMAC(data []byte) ([]byte, error)
+	VerifyHMAC(data, providedHMAC []byte) (bool, error)
+	EncryptAndAuthenticate(plaintext []byte) (*SecureData, error)
+	DecryptAndVerify(secureData *SecureData) ([]byte, error)
+}
+
+// Ensure KeyManager implements KeyManagerInterface
+var _ KeyManagerInterface = (*KeyManager)(nil)
+
 // KeyManager manages encryption and integrity keys
 type KeyManager struct {
 	// EncryptionKey is used for AES-GCM encryption

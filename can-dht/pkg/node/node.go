@@ -2,6 +2,7 @@ package node
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 )
@@ -23,6 +24,9 @@ type Node struct {
 	// Neighbors is a map of neighboring nodes
 	Neighbors map[NodeID]*NeighborInfo
 
+	// ExtendedNeighbors tracks nodes that are multiple hops away
+	ExtendedNeighbors map[NodeID]*ExtendedNeighborInfo
+
 	// Data is the key-value store managed by this node
 	Data map[string]string
 
@@ -42,16 +46,24 @@ type NeighborInfo struct {
 	Zone    *Zone
 }
 
+// ExtendedNeighborInfo contains information about nodes that are multiple hops away
+type ExtendedNeighborInfo struct {
+	*NeighborInfo
+	HopCount int
+	Path     []NodeID // Path to reach this node
+}
+
 // NewNode creates a new node with the given parameters
 func NewNode(id NodeID, address string, zone *Zone, dimensions int) *Node {
 	return &Node{
-		ID:         id,
-		Address:    address,
-		Zone:       zone,
-		Neighbors:  make(map[NodeID]*NeighborInfo),
-		Data:       make(map[string]string),
-		Dimensions: dimensions,
-		Heartbeats: make(map[NodeID]time.Time),
+		ID:                id,
+		Address:           address,
+		Zone:              zone,
+		Neighbors:         make(map[NodeID]*NeighborInfo),
+		ExtendedNeighbors: make(map[NodeID]*ExtendedNeighborInfo),
+		Data:              make(map[string]string),
+		Dimensions:        dimensions,
+		Heartbeats:        make(map[NodeID]time.Time),
 	}
 }
 
@@ -67,6 +79,32 @@ func (n *Node) AddNeighbor(id NodeID, address string, zone *Zone) {
 	}
 }
 
+// AddExtendedNeighbor adds a multi-hop neighbor to the node's extended neighbor list
+func (n *Node) AddExtendedNeighbor(id NodeID, address string, zone *Zone, hopCount int, path []NodeID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	// Don't add our immediate neighbors to extended neighbors
+	if _, exists := n.Neighbors[id]; exists {
+		return
+	}
+
+	// Don't add ourselves
+	if id == n.ID {
+		return
+	}
+
+	n.ExtendedNeighbors[id] = &ExtendedNeighborInfo{
+		NeighborInfo: &NeighborInfo{
+			ID:      id,
+			Address: address,
+			Zone:    zone,
+		},
+		HopCount: hopCount,
+		Path:     path,
+	}
+}
+
 // RemoveNeighbor removes a neighbor from the node's neighbor list
 func (n *Node) RemoveNeighbor(id NodeID) {
 	n.mu.Lock()
@@ -74,6 +112,14 @@ func (n *Node) RemoveNeighbor(id NodeID) {
 
 	delete(n.Neighbors, id)
 	delete(n.Heartbeats, id)
+}
+
+// RemoveExtendedNeighbor removes a node from the extended neighbor list
+func (n *Node) RemoveExtendedNeighbor(id NodeID) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	delete(n.ExtendedNeighbors, id)
 }
 
 // UpdateHeartbeat updates the last heartbeat time for a neighbor
@@ -213,4 +259,48 @@ func (n *Node) Split() (*Zone, error) {
 	n.Zone = myNewZone
 
 	return newNodeZone, nil
+}
+
+// ProactiveSplit splits the node's zone for load balancing
+// Unlike regular Split, this is initiated by the node itself, not by a joining node
+func (n *Node) ProactiveSplit() (*Zone, error) {
+	if n.Zone == nil {
+		return nil, fmt.Errorf("node has no zone")
+	}
+
+	// Find the dimension with the largest span
+	maxDim := 0
+	maxSpan := n.Zone.MaxPoint[0] - n.Zone.MinPoint[0]
+	for i := 1; i < len(n.Zone.MinPoint); i++ {
+		span := n.Zone.MaxPoint[i] - n.Zone.MinPoint[i]
+		if span > maxSpan {
+			maxSpan = span
+			maxDim = i
+		}
+	}
+
+	// Split at the midpoint of the chosen dimension
+	splitPoint := n.Zone.MinPoint[maxDim] + maxSpan/2
+	
+	// Create the new zone
+	newMin := make(Point, len(n.Zone.MinPoint))
+	newMax := make(Point, len(n.Zone.MaxPoint))
+	copy(newMin, n.Zone.MinPoint)
+	copy(newMax, n.Zone.MaxPoint)
+	
+	// Adjust boundaries of the new zone
+	newMin[maxDim] = splitPoint
+	
+	newZone, err := NewZone(newMin, newMax)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create new zone: %w", err)
+	}
+	
+	// Update this node's zone
+	n.Zone.MaxPoint[maxDim] = splitPoint
+	
+	// Log the split
+	log.Printf("Node %s proactively split zone at dimension %d, point %f", n.ID, maxDim, splitPoint)
+	
+	return newZone, nil
 }

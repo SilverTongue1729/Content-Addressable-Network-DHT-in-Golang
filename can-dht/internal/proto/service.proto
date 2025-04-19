@@ -1,0 +1,8 @@
+message ReplicatePutRequest {
+    string key = 1;
+    bytes value = 2;
+    bool is_hot_key = 3;
+    int64 hot_key_expiry = 4;
+    repeated string replica_nodes = 5;
+    bool IsConflictResolution = 6;
+} 

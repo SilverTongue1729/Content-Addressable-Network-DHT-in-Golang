@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
+	"os"
+	"path/filepath"
 
 	// "net"
 	"sync"
@@ -15,15 +18,18 @@ import (
 	"github.com/can-dht/pkg/node"
 	"github.com/can-dht/pkg/routing"
 	"github.com/can-dht/pkg/storage"
-	pb "github.com/can-dht/proto"
+	"github.com/can-dht/pkg/cache"
+	"github.com/can-dht/pkg/security"
+	pb "github.com/can-dht/internal/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/grpc/credentials"
 	// This will be generated after running protoc
 	// pb "github.com/can-dht/proto"
 )
 
-// CANServer implements the CAN service
+// CANServer represents a Content Addressable Network server
 type CANServer struct {
 	// Node is the local node instance
 	Node *node.Node
@@ -35,7 +41,7 @@ type CANServer struct {
 	Store *storage.Store
 
 	// KeyManager handles encryption and integrity
-	KeyManager *crypto.KeyManager
+	KeyManager crypto.KeyManagerInterface
 
 	// Config holds server configuration
 	Config *CANConfig
@@ -43,104 +49,297 @@ type CANServer struct {
 	// LoadStats tracks load statistics for load balancing
 	LoadStats *LoadStats
 
+	// RoutingTable stores information for probabilistic routing
+	RoutingTable *RoutingTable
+
 	// IntegrityChecker performs periodic integrity checks
 	IntegrityChecker *integrity.PeriodicChecker
 
+	// IntegrityManager handles enhanced integrity checking and repair
+	IntegrityManager *IntegrityManager
+
+	// ReplicaTracker tracks where data is replicated
+	ReplicaTracker *ReplicaTracker
+
+	// Cache for frequently accessed data
+	Cache *cache.LRUCache
+
+	// HotKeyTracker tracks frequently accessed keys
+	HotKeyTracker *HotKeyTracker
+	
+	// AccessController handles API key authentication and authorization
+	AccessController *security.AccessController
+	
+	// EnableAccessControl determines if access control is enforced
+	EnableAccessControl bool
+	
+	// RequestDistributor manages request distribution for load balancing
+	RequestDistributor *RequestDistributor
+	
+	// RoleManager manages node roles and capabilities
+	RoleManager *RoleManager
+
 	mu sync.RWMutex
+
+	ctx        context.Context
+	cancelFunc context.CancelFunc
+
+	// APIKeysManager manages API keys and their permissions
+	apiKeysManager *APIKeysManager
 }
 
-// CANConfig holds the configuration for the CAN DHT server
+// APIKeysManager manages API keys and their permissions
+type APIKeysManager struct {
+	keys map[string]map[string]bool // key -> permission -> true/false
+}
+
+// NewAPIKeysManager creates a new API keys manager
+func NewAPIKeysManager(filePath string) (*APIKeysManager, error) {
+	// For the sake of this fix, we'll create a simple implementation
+	// In a real system, this would load from a file or other source
+	manager := &APIKeysManager{
+		keys: make(map[string]map[string]bool),
+	}
+	
+	// Add a default admin key with all permissions
+	manager.keys["admin"] = map[string]bool{
+		"read":  true,
+		"write": true,
+	}
+	
+	return manager, nil
+}
+
+// HasPermission checks if an API key has a specific permission
+func (m *APIKeysManager) HasPermission(apiKey, permission string) bool {
+	if perms, exists := m.keys[apiKey]; exists {
+		return perms[permission]
+	}
+	return false
+}
+
+// CANConfig contains configuration options for the CAN server
 type CANConfig struct {
-	// Number of dimensions in the CAN space
-	Dimensions int
+	// NodeID is the unique identifier for this node
+	NodeID string
+	// Address is the address of this node
+	Address string
 	// Directory for data storage
 	DataDir string
-	// Enable encryption for stored data
-	EnableEncryption bool
-	// Replication factor for fault tolerance (1 = no replication)
+	// Dimensions is the number of dimensions in the CAN space
+	Dimensions int
+	// BootstrapNodes is a list of known nodes in the network
+	BootstrapNodes []string
+	// ReplicationFactor is the number of replicas to maintain
 	ReplicationFactor int
-	// Interval between heartbeat messages
+	// HeartbeatInterval is the interval between heartbeat messages
 	HeartbeatInterval time.Duration
-	// Timeout for considering a node dead
+	// HeartbeatTimeout is the time after which a node is considered dead
 	HeartbeatTimeout time.Duration
-	// Interval between integrity checks (0 = disabled)
+	// IntegrityCheckInterval is how often to check data integrity (0 = disabled)
 	IntegrityCheckInterval time.Duration
+	// KeyRotationInterval is how often to rotate encryption keys (0 means no rotation)
+	KeyRotationInterval time.Duration
+	// UseEnhancedIntegrity indicates whether to use enhanced integrity checking
+	UseEnhancedIntegrity bool
+	// EnableCache determines if the LRU cache is enabled
+	EnableCache bool
+	// CacheSize is the maximum number of items in the cache
+	CacheSize int
+	// EnableTLS determines if TLS is used for connections
+	EnableTLS bool
+	// TLSCertFile is the path to the TLS certificate
+	TLSCertFile string
+	// TLSKeyFile is the path to the TLS key
+	TLSKeyFile string
+	// TLSCAFile is the path to the CA certificate for verifying client certificates
+	TLSCAFile string
+	// TLSServerName is the expected server name for verification
+	TLSServerName string
+	// LoadBalancingThreshold is the threshold for load balancing
+	LoadBalancingThreshold float64
+	// EnableAccessControl determines if API key authentication is enforced
+	EnableAccessControl bool
+	// ApiKeysFile is the path to the file containing API keys
+	ApiKeysFile string
+	// NodeRole defines the role of this node in the network
+	NodeRole string
+	// EnableZoneMerging determines if underloaded nodes should merge zones
+	EnableZoneMerging bool
+	// MinZoneSize is the minimum size a zone can be
+	MinZoneSize float64
+	// EnableRequestRedistribution determines if request redistribution is enabled
+	EnableRequestRedistribution bool
+	// RequestDistributionStrategy defines how requests should be distributed
+	RequestDistributionStrategy string
 }
 
-// DefaultCANConfig returns a default configuration
+// DefaultCANConfig returns the default configuration
 func DefaultCANConfig() CANConfig {
 	return CANConfig{
-		Dimensions:             2,
-		DataDir:                "data",
-		EnableEncryption:       true,
-		ReplicationFactor:      1,
-		HeartbeatInterval:      5 * time.Second,
-		HeartbeatTimeout:       15 * time.Second,
-		IntegrityCheckInterval: 1 * time.Hour, // Default to hourly checks
+		Dimensions:                2,
+		DataDir:                  "data",
+		EnableEncryption:         true,
+		ReplicationFactor:        1,
+		HeartbeatInterval:        5 * time.Second,
+		HeartbeatTimeout:         15 * time.Second,
+		IntegrityCheckInterval:   0, // Disabled by default
+		MaxReplicationHops:       2, // Default to 2 hops for extended replication
+		ReplicaRepairInterval:    10 * time.Minute,
+		TopologyRefreshInterval:  3 * time.Minute,
+		EnableProbabilisticRouting: true, // Enable by default
+		RequestThrottleLimit:     100.0, // Default 100 req/sec
+		KeyFilePath:              "keys/encryption_keys.json", // Default path for key storage
+		KeyRotationInterval:      24 * 7 * time.Hour, // Default to weekly rotation
+		UseEnhancedIntegrity:     false, // Default to not using enhanced integrity
+		EnableCache:              true,
+		CacheSize:                1000,
+		CacheTTL:                 10 * time.Minute,
+		EnableFrequencyBasedReplication: true,
+		HotKeyThreshold:          10.0,
+		HotKeyDecayFactor:        0.9,
+		HotKeyTTL:                24 * time.Hour,
+		HotKeyMaxTracked:         100,
+		HotKeyAnalysisInterval:   1 * time.Hour,
+		HotKeyReplicationFactor:  2,
+		HotKeyServingProbability:  0.5,
+		EnableMTLS:               false, // Disabled by default for backward compatibility
+		TLSCertFile:              "certs/node.crt",
+		TLSKeyFile:               "certs/node.key",
+		TLSCAFile:                "certs/ca.crt",
+		TLSServerName:            "can-dht-node",
+		LoadBalancingThreshold:   0.8, // Trigger proactive splitting at 80% capacity
+		EnableAccessControl:      false,
+		ApiKeysFile:              "api_keys.json",
+		NodeRole:                 "standard",
+		EnableZoneMerging:        false,
+		ZoneUtilizationThreshold: 0.5,
+		EnableRequestRedistribution: false,
+		RequestDistributionStrategy: "random",
 	}
 }
 
 // NewCANServer creates a new CAN server
-func NewCANServer(nodeID node.NodeID, address string, config *CANConfig) (*CANServer, error) {
-	// Create the local node
-	// Initially, the node owns the entire coordinate space
-	minPoint := make(node.Point, config.Dimensions)
-	maxPoint := make(node.Point, config.Dimensions)
-	for i := 0; i < config.Dimensions; i++ {
-		minPoint[i] = 0.0
-		maxPoint[i] = 1.0
+func NewCANServer(config *CANConfig) (*CANServer, error) {
+	if config.Dimensions <= 0 {
+		return nil, fmt.Errorf("dimensions must be greater than 0")
 	}
 
-	zone, err := node.NewZone(minPoint, maxPoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create zone: %w", err)
+	// Create a new node
+	nodeID := node.NodeID(config.NodeID)
+	if nodeID == "" {
+		// Generate a random node ID if not provided
+		nodeID = node.GenerateNodeID()
 	}
 
-	localNode := node.NewNode(nodeID, address, zone, config.Dimensions)
+	// Create initial zone covering the entire space
+	initialZone := node.NewZone(config.Dimensions)
 
-	// Create the router
-	router := routing.NewRouter(config.Dimensions)
+	// Create node
+	n := node.NewNode(nodeID, config.Address, initialZone)
 
-	// Create the store
-	storeOpts := storage.DefaultStoreOptions()
-	storeOpts.DataDir = config.DataDir
-	store, err := storage.NewStore(storeOpts)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create store: %w", err)
-	}
-
-	// Create the key manager if encryption is enabled
-	var keyManager *crypto.KeyManager
-	if config.EnableEncryption {
-		keyManager, err = crypto.NewKeyManager()
-		if err != nil {
-			return nil, fmt.Errorf("failed to create key manager: %w", err)
-		}
-	}
-
+	// Create the CAN server
 	server := &CANServer{
-		Node:       localNode,
-		Router:     router,
-		Store:      store,
-		KeyManager: keyManager,
-		Config:     config,
+		Config:       config,
+		Node:         n,
+		Router:       node.NewRouter(n),
+		neighbors:    make(map[node.NodeID]*node.NodeInfo),
+		lastSeen:     make(map[node.NodeID]time.Time),
+		storage:      make(map[string]string),
+		connections:  make(map[string]*grpc.ClientConn),
+		mu:           &sync.RWMutex{},
+		replicaMu:    &sync.RWMutex{},
+		replicaStore: make(map[string]map[string][]byte), // nodeID -> key -> value
+		stopped:      make(chan struct{}),
 	}
 
-	// Initialize the integrity checker if interval is non-zero
-	if config.IntegrityCheckInterval > 0 {
-		server.initIntegrityChecker()
+	// Use the appropriate request distribution strategy
+	switch config.RequestDistributionStrategy {
+	case "random":
+		server.requestDistributor = NewRandomDistributor(server)
+	case "round_robin":
+		server.requestDistributor = NewRoundRobinDistributor(server)
+	case "least_loaded":
+		server.requestDistributor = NewLeastLoadedDistributor(server)
+	default:
+		server.requestDistributor = NewDirectDistributor(server)
+	}
+
+	// Initialize role manager
+	if config.NodeRole == "" {
+		config.NodeRole = string(RoleStandard)
+		log.Printf("No role specified, defaulting to '%s'", config.NodeRole)
+	}
+	server.RoleManager = NewRoleManager(server)
+	log.Printf("Node initialized with role '%s'", config.NodeRole)
+
+	// Initialize integrity checker
+	if err := server.initIntegrityChecker(); err != nil {
+		log.Printf("Failed to initialize integrity checker: %v", err)
+	}
+
+	// Initialize the replica tracker
+	server.replicaTracker = NewReplicaTracker(server, config.ReplicationFactor)
+
+	// Create an API keys manager if access control is enabled
+	if config.EnableAccessControl {
+		manager, err := NewAPIKeysManager(config.ApiKeysFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize API keys manager: %w", err)
+		}
+		server.apiKeysManager = manager
 	}
 
 	return server, nil
 }
 
 // initIntegrityChecker initializes the integrity checker
-func (s *CANServer) initIntegrityChecker() {
-	if s.KeyManager == nil {
-		// No integrity checker needed if encryption is disabled
-		return
+func (s *CANServer) initIntegrityChecker() error {
+	// Skip if integrity check interval is zero
+	if s.Config.IntegrityCheckInterval <= 0 {
+		log.Printf("Integrity checking is disabled")
+		return nil
 	}
+	
+	// Check if we should use the enhanced integrity system
+	if s.Config.UseEnhancedIntegrity {
+		log.Printf("Initializing enhanced integrity system with check interval %v", s.Config.IntegrityCheckInterval)
+		
+		var err error
+		s.IntegrityManager, err = NewIntegrityManager(s)
+		if err != nil {
+			log.Printf("Failed to initialize enhanced integrity system: %v. Falling back to basic checker.", err)
+			s.initBasicIntegrityChecker()
+			return nil
+		}
+		
+		// Set up handlers
+		s.IntegrityManager.SetCorruptionHandler(func(key string, err error) {
+			log.Printf("Enhanced integrity check detected corruption in key '%s': %v", key, err)
+			s.RecoverCorruptedData(context.Background(), key)
+		})
+		
+		s.IntegrityManager.SetCheckCompleteHandler(func(success bool, count int) {
+			if success {
+				log.Printf("Enhanced integrity check completed successfully for %d keys", count)
+			} else {
+				log.Printf("Enhanced integrity check found issues among %d keys", count)
+			}
+		})
+		
+		// Start periodic checks in a goroutine
+		go s.IntegrityManager.PerformPeriodicChecks(s.ctx, s.Config.IntegrityCheckInterval)
+		
+		log.Printf("Enhanced integrity system initialized")
+	} else {
+		// Use the basic integrity checker
+		s.initBasicIntegrityChecker()
+	}
+	return nil
+}
 
+// initBasicIntegrityChecker initializes the basic integrity checker
+func (s *CANServer) initBasicIntegrityChecker() {
 	s.IntegrityChecker = integrity.NewPeriodicChecker(s.Store, s.KeyManager, s.Config.IntegrityCheckInterval)
 
 	// Custom handler for corruption events
@@ -166,9 +365,8 @@ func (s *CANServer) initIntegrityChecker() {
 		}
 	}
 
-	// Custom handler for check completion
 	s.IntegrityChecker.OnCheckCompleted = func(stats *integrity.IntegrityStats) {
-		log.Printf("Integrity check completed: %d total, %d corrupted, %d repaired, %d unrepaired",
+		log.Printf("Integrity check completed: Checked %d keys, found %d corrupted, repaired %d, %d unrepaired",
 			stats.TotalChecks, stats.CorruptedData, stats.RepairedData, stats.UnrepairedData)
 	}
 }
@@ -193,25 +391,87 @@ func (s *CANServer) RecoverCorruptedData(ctx context.Context, key string) error 
 	return nil
 }
 
-// Start starts the CAN server
+// Start the CAN server
 func (s *CANServer) Start() {
-	// Start the heartbeat process
+	// Start heartbeat process
 	go s.startHeartbeatProcess()
 
-	// Start the integrity checker if configured
+	// Start key rotation if enabled and interval is positive
+	if s.Config.EnableEncryption && s.Config.KeyRotationInterval > 0 {
+		go s.startKeyRotation()
+	}
+
+	// Start periodic integrity checking if enabled
+	if s.Config.IntegrityCheckInterval > 0 {
+		s.initIntegrityChecker()
+	}
+
+	// Start integrity checker if it's initialized
 	if s.IntegrityChecker != nil {
-		log.Printf("Starting periodic integrity checks with interval %v", s.Config.IntegrityCheckInterval)
 		s.IntegrityChecker.Start()
+	}
+
+	// Start replica maintenance if replication is enabled
+	if s.Config.ReplicationFactor > 1 && s.ReplicaTracker != nil {
+		go s.startReplicaMaintenance()
+	}
+
+	// Start network topology discovery if multi-hop replication is enabled
+	if s.Config.MaxReplicationHops > 1 {
+		go s.startNetworkTopologyDiscovery()
+	}
+
+	// Start probabilistic routing if enabled
+	if s.Config.EnableProbabilisticRouting && s.RoutingTable != nil {
+		go s.InitProbabilisticRouting()
+	}
+
+	// Start load monitoring for proactive load balancing
+	go s.StartLoadMonitoring(s.ctx)
+
+	// Start cache maintenance if caching is enabled
+	if s.Config.EnableCache {
+		go s.startCacheMaintenance()
+	}
+
+	// Start hot key tracking and replication if enabled
+	if s.Config.EnableFrequencyBasedReplication && s.HotKeyTracker != nil {
+		go s.StartHotKeyAnalysis()
+		log.Printf("Started frequency-based replication with analysis interval %v", s.Config.HotKeyAnalysisInterval)
 	}
 }
 
-// StartGRPCServer starts the gRPC server
+// StartGRPCServer registers the CAN service with a gRPC server
 func (s *CANServer) StartGRPCServer(grpcServer *grpc.Server) {
-	// Create a gRPC server implementation
 	grpcImpl := NewGRPCServer(s)
-
-	// Register with the gRPC server
 	grpcImpl.RegisterWithGRPCServer(grpcServer)
+}
+
+// CreateGRPCServer creates a new gRPC server with appropriate security settings
+func (s *CANServer) CreateGRPCServer() (*grpc.Server, error) {
+	var serverOpts []grpc.ServerOption
+	
+	if s.Config.EnableMTLS {
+		// Set up TLS configuration for mTLS
+		tlsConfig := crypto.TLSConfig{
+			CertFile:   s.Config.TLSCertFile,
+			KeyFile:    s.Config.TLSKeyFile,
+			CAFile:     s.Config.TLSCAFile,
+			ServerName: s.Config.TLSServerName,
+		}
+		
+		creds, err := crypto.LoadServerTLSCredentials(tlsConfig)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load TLS credentials: %w", err)
+		}
+		
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(creds)))
+	}
+	
+	grpcServer := grpc.NewServer(serverOpts...)
+	s.StartGRPCServer(grpcServer)
+	
+	return grpcServer, nil
 }
 
 // Stop stops the CAN server
@@ -336,35 +596,11 @@ func (s *CANServer) handleDeadNode(deadNodeID node.NodeID, info *node.NeighborIn
 
 // shouldTakeOverZone determines if this node should take over a dead node's zone
 func (s *CANServer) shouldTakeOverZone(deadNodeID node.NodeID, deadZone *node.Zone) bool {
-	// Simple policy: If zones are adjacent and we're the closest node by ID (lexicographically),
-	// then we take over the zone
-
-	// Check if our zone is adjacent to the dead node's zone
-	if !isZonesAdjacent(s.Node.Zone, deadZone, s.Config.Dimensions) {
-		return false
-	}
-
-	// Check all remaining neighbors to see if any is "closer" to the dead node
-	for id, neighborInfo := range s.Node.Neighbors {
-		// Skip the dead node itself
-		if id == deadNodeID {
-			continue
-		}
-
-		// Skip neighbors that aren't adjacent to the dead zone
-		if !isZonesAdjacent(neighborInfo.Zone, deadZone, s.Config.Dimensions) {
-			continue
-		}
-
-		// If this neighbor's ID is lexicographically smaller than ours,
-		// they should take over instead
-		if string(id) < string(s.Node.ID) {
-			return false
-		}
-	}
-
-	// We're the closest eligible node to take over
-	return true
+	// Use our enhanced neighbor selection logic
+	bestNodeID, found := s.selectTakeoverNeighbor(deadNodeID, deadZone)
+	
+	// We should take over if we're the best node
+	return found && bestNodeID == s.Node.ID
 }
 
 // isZonesAdjacent checks if two zones are adjacent
@@ -592,226 +828,443 @@ func (s *CANServer) Leave(ctx context.Context) error {
 	return nil
 }
 
-// Put stores a key-value pair
+// Put stores a key-value pair in the CAN
 func (s *CANServer) Put(ctx context.Context, key string, value []byte) error {
-	// Record request for load balancing
-	s.RecordRequest(key, true)
-
-	// Hash the key to find the responsible node
-	point := s.Router.HashToPoint(key)
-
-	// Check if the local node is responsible for this point
-	if s.Node.Zone.Contains(point) {
-		// Encrypt the value if encryption is enabled
-		var dataToStore []byte
-
-		if s.Config.EnableEncryption && s.KeyManager != nil {
-			secureData, encErr := s.KeyManager.EncryptAndAuthenticate(value)
-			if encErr != nil {
-				return fmt.Errorf("failed to encrypt value: %w", encErr)
-			}
-
-			// Serialize the secure data
-			serialized := crypto.SerializeSecureData(secureData)
-			dataToStore = []byte(serialized)
-		} else {
-			dataToStore = value
+	// Check permissions if access control is enabled
+	if s.EnableAccessControl {
+		apiKey := security.GetAPIKey(ctx)
+		if !s.AccessController.CheckPermission(apiKey, security.PermissionWrite) {
+			return fmt.Errorf("access denied: missing write permission")
 		}
-
-		// Store the value
-		if err := s.Store.Put(key, dataToStore); err != nil {
-			return fmt.Errorf("failed to store value: %w", err)
-		}
-
-		// Replicate to neighbors if replication is enabled
-		if s.Config.ReplicationFactor > 1 {
-			if err := s.ReplicateData(ctx, key, dataToStore); err != nil {
-				log.Printf("Warning: replication failed for key %s: %v", key, err)
-				// Continue even if replication fails
-			}
-		}
-
-		return nil
 	}
 
-	// If not responsible, find the next hop
+	// Check if this node is responsible for the key
+	s.mu.RLock()
+	keyPoint := s.Router.HashToPoint(key)
 	nextHop, isResponsible := s.Router.FindResponsibleNode(s.Node, key)
-	if isResponsible {
-		// This should not happen, as we already checked if the local node is responsible
-		return fmt.Errorf("internal error: router says local node is responsible but zone check failed")
+	s.mu.RUnlock()
+
+	if !isResponsible {
+		// Forward to the responsible node
+		return s.forwardPut(ctx, nextHop, key, value)
 	}
 
-	if nextHop == nil {
-		return fmt.Errorf("no route to responsible node")
+	// Encrypt the value if encryption is enabled
+	var dataToStore []byte
+	if s.Config.EnableEncryption {
+		if s.KeyManager == nil {
+			return fmt.Errorf("encryption is enabled but key manager is not initialized")
+		}
+
+		encrypted, err := s.KeyManager.EncryptValue(value)
+		if err != nil {
+			return s.handleEncryptionError(key, err)
+		}
+		dataToStore = encrypted
+	} else {
+		dataToStore = value
 	}
 
-	// Forward the request to the next hop
-	client, conn, err := ConnectToNode(ctx, nextHop.Address)
-	if err != nil {
-		return fmt.Errorf("failed to connect to next hop: %w", err)
-	}
-	defer conn.Close()
+	// Store locally
+	s.mu.Lock()
+	s.Node.Data[key] = string(dataToStore)
+	s.mu.Unlock()
 
-	// Create the request
-	req := &pb.PutRequest{
-		Key:     key,
-		Value:   value,
-		Forward: false, // Not a forwarded request yet
+	// If replication is enabled, replicate to neighbors
+	if s.Config.ReplicationFactor > 1 && s.ReplicaTracker != nil {
+		go s.replicatePut(ctx, key, dataToStore)
 	}
 
-	// Send the request
-	resp, err := client.Put(ctx, req)
-	if err != nil {
-		return fmt.Errorf("failed to forward PUT request: %w", err)
+	// Store to persistent storage if available
+	if s.Store != nil {
+		if err := s.Store.Put(key, dataToStore); err != nil {
+			log.Printf("Warning: failed to persist data for key %s: %v", key, err)
+		}
 	}
 
-	if !resp.Success {
-		return fmt.Errorf("PUT request was unsuccessful")
+	// If cache is enabled, update the cache
+	if s.Config.EnableCache && s.Cache != nil {
+		s.Cache.Put(key, value)
+	}
+
+	// Increment request count for load stats
+	s.LoadStats.IncrementRequestCount()
+
+	// Track access frequency if enabled
+	if s.Config.EnableFrequencyBasedReplication && s.HotKeyTracker != nil {
+		s.HotKeyTracker.RecordAccess(key)
 	}
 
 	return nil
 }
 
-// Get retrieves a value by key
+// Get retrieves a value by key from the CAN
 func (s *CANServer) Get(ctx context.Context, key string) ([]byte, error) {
-	// Record request for load balancing
-	s.RecordRequest(key, false)
-
-	// Hash the key to find the responsible node
-	point := s.Router.HashToPoint(key)
-
-	// Check if the local node is responsible for this point
-	if s.Node.Zone.Contains(point) {
-		// Retrieve the value
-		value, exists, err := s.Store.Get(key)
-		if err != nil {
-			return nil, fmt.Errorf("failed to retrieve value: %w", err)
+	// Check permissions if access control is enabled
+	if s.EnableAccessControl {
+		apiKey := security.GetAPIKey(ctx)
+		if !s.AccessController.CheckPermission(apiKey, security.PermissionRead) {
+			return nil, fmt.Errorf("access denied: missing read permission")
 		}
-
-		if !exists {
-			return nil, status.Errorf(codes.NotFound, "key not found")
-		}
-
-		// Decrypt the value if encryption is enabled
-		if s.Config.EnableEncryption && s.KeyManager != nil {
-			// Deserialize the secure data
-			secureData, err := crypto.DeserializeSecureData(string(value))
-			if err != nil {
-				return nil, fmt.Errorf("failed to deserialize secure data: %w", err)
-			}
-
-			// Decrypt and verify
-			plaintext, err := s.KeyManager.DecryptAndVerify(secureData)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decrypt value: %w", err)
-			}
-
-			return plaintext, nil
-		}
-
-		return value, nil
 	}
 
-	// If not responsible, find the next hop
+	// Check if cache has the value
+	if s.Config.EnableCache && s.Cache != nil {
+		if cachedValue, found := s.Cache.Get(key); found {
+			// Track access frequency if enabled
+			if s.Config.EnableFrequencyBasedReplication && s.HotKeyTracker != nil {
+				s.HotKeyTracker.RecordAccess(key)
+			}
+			return cachedValue, nil
+		}
+	}
+
+	// Check if this node is responsible for the key
+	s.mu.RLock()
+	keyPoint := s.Router.HashToPoint(key)
 	nextHop, isResponsible := s.Router.FindResponsibleNode(s.Node, key)
-	if isResponsible {
-		// This should not happen, as we already checked if the local node is responsible
-		return nil, fmt.Errorf("internal error: router says local node is responsible but zone check failed")
+	s.mu.RUnlock()
+
+	// Check if we have a hot key replica of this key
+	if s.Config.EnableFrequencyBasedReplication && s.ReplicaTracker != nil {
+		if s.ReplicaTracker.IsHotKeyReplica(key, s.Node.ID) {
+			// Decide probabilistically whether to serve from replica
+			if rand.Float64() <= s.Config.HotKeyServingProbability {
+				data, err := s.getLocalData(key)
+				if err == nil {
+					return data, nil
+				}
+			}
+		}
 	}
 
-	if nextHop == nil {
-		return nil, fmt.Errorf("no route to responsible node")
+	if !isResponsible {
+		// Forward to the responsible node
+		return s.forwardGet(ctx, nextHop, key)
 	}
 
-	// Forward the request to the next hop
-	client, conn, err := ConnectToNode(ctx, nextHop.Address)
+	// Try to retrieve from local storage
+	data, err := s.getLocalData(key)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to next hop: %w", err)
-	}
-	defer conn.Close()
-
-	// Create the request
-	req := &pb.GetRequest{
-		Key:     key,
-		Forward: false, // Not a forwarded request yet
+		return nil, err
 	}
 
-	// Send the request
-	resp, err := client.Get(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to forward GET request: %w", err)
+	// Track access frequency if enabled
+	if s.Config.EnableFrequencyBasedReplication && s.HotKeyTracker != nil {
+		s.HotKeyTracker.RecordAccess(key)
 	}
 
-	if !resp.Success {
-		return nil, fmt.Errorf("GET request was unsuccessful")
+	// If cache is enabled, update the cache
+	if s.Config.EnableCache && s.Cache != nil {
+		s.Cache.Put(key, data)
 	}
 
-	if !resp.Exists {
-		return nil, status.Errorf(codes.NotFound, "key not found")
-	}
+	// Increment request count for load stats
+	s.LoadStats.IncrementRequestCount()
 
-	return resp.Value, nil
+	return data, nil
 }
 
-// Delete removes a key-value pair
+// Delete removes a key-value pair from the CAN
 func (s *CANServer) Delete(ctx context.Context, key string) error {
-	// Record request for load balancing
-	s.RecordRequest(key, true)
-
-	// Hash the key to find the responsible node
-	point := s.Router.HashToPoint(key)
-
-	// Check if the local node is responsible for this point
-	if s.Node.Zone.Contains(point) {
-		// Delete the value
-		if err := s.Store.Delete(key); err != nil {
-			return fmt.Errorf("failed to delete value: %w", err)
+	// Check permissions if access control is enabled
+	if s.EnableAccessControl {
+		apiKey := security.GetAPIKey(ctx)
+		if !s.AccessController.CheckPermission(apiKey, security.PermissionWrite) {
+			return fmt.Errorf("access denied: missing write permission")
 		}
+	}
 
-		// Delete from replicas if replication is enabled
-		if s.Config.ReplicationFactor > 1 {
-			if err := s.UpdatedDeleteWithReplication(ctx, key); err != nil {
-				log.Printf("Warning: delete replication failed for key %s: %v", key, err)
-				// Continue even if replication fails
+	// Check if this node is responsible for the key
+	s.mu.RLock()
+	keyPoint := s.Router.HashToPoint(key)
+	nextHop, isResponsible := s.Router.FindResponsibleNode(s.Node, key)
+	s.mu.RUnlock()
+
+	if !isResponsible {
+		// Forward to the responsible node
+		return s.forwardDelete(ctx, nextHop, key)
+	}
+
+	// Delete locally
+	s.mu.Lock()
+	delete(s.Node.Data, key)
+	s.mu.Unlock()
+
+	// Delete from persistent storage if available
+	if s.Store != nil {
+		if err := s.Store.Delete(key); err != nil {
+			log.Printf("Warning: failed to delete data for key %s from persistent storage: %v", key, err)
+		}
+	}
+
+	// If replication is enabled, delete from replicas
+	if s.Config.ReplicationFactor > 1 && s.ReplicaTracker != nil {
+		go s.replicateDelete(ctx, key)
+	}
+
+	// If cache is enabled, invalidate the cache entry
+	if s.Config.EnableCache && s.Cache != nil {
+		s.Cache.Remove(key)
+	}
+
+	// If frequency tracking is enabled, remove from hot key tracker
+	if s.Config.EnableFrequencyBasedReplication && s.HotKeyTracker != nil {
+		s.HotKeyTracker.RemoveKey(key)
+	}
+
+	// Increment request count for load stats
+	s.LoadStats.IncrementRequestCount()
+
+	return nil
+}
+
+// calculateZoneVolume calculates the "volume" of a zone in n-dimensional space
+func calculateZoneVolume(zone *node.Zone) float64 {
+	if zone == nil {
+		return 0.0
+	}
+	
+	volume := 1.0
+	for i := 0; i < len(zone.MinPoint); i++ {
+		dimension := zone.MaxPoint[i] - zone.MinPoint[i]
+		volume *= dimension
+	}
+	
+	return volume
+}
+
+// estimateAverageZoneVolume estimates the average zone size in the network
+func (s *CANServer) estimateAverageZoneVolume() float64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	// Count ourselves plus all known neighbors and extended neighbors
+	nodeCount := 1 // Start with ourselves
+	nodeCount += len(s.Node.Neighbors)
+	nodeCount += len(s.Node.ExtendedNeighbors)
+	
+	// The entire CAN space is a unit hypercube with volume 1.0
+	// So average zone size is approximately 1.0 / number of nodes
+	if nodeCount > 0 {
+		return 1.0 / float64(nodeCount)
+	}
+	return 1.0 // Default if we don't know any other nodes
+}
+
+// getNodeLoadScore calculates a load score for a node (lower is better for takeover)
+func (s *CANServer) getNodeLoadScore(nodeID node.NodeID) float64 {
+	// If it's us, we know our load precisely
+	if nodeID == s.Node.ID {
+		if s.LoadStats != nil {
+			s.LoadStats.mu.RLock()
+			requests := float64(s.LoadStats.RequestCount)
+			s.LoadStats.mu.RUnlock()
+			return 0.5 + (requests / 1000.0) // Base score plus request load factor
+		}
+		return 1.0 // Default load score
+	}
+	
+	// For other nodes, we don't have precise info, so estimate based on zone size
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	var neighborZone *node.Zone
+	
+	// Check immediate neighbors
+	if neighbor, exists := s.Node.Neighbors[nodeID]; exists {
+		neighborZone = neighbor.Zone
+	} else if extNeighbor, exists := s.Node.ExtendedNeighbors[nodeID]; exists {
+		// Check extended neighbors
+		neighborZone = extNeighbor.NeighborInfo.Zone
+	}
+	
+	if neighborZone != nil {
+		// Estimate load based on zone volume relative to average
+		zoneVolume := calculateZoneVolume(neighborZone)
+		avgVolume := s.estimateAverageZoneVolume()
+		
+		if avgVolume > 0 {
+			return zoneVolume / avgVolume
+		}
+	}
+	
+	return 1.0 // Default score if we don't have enough information
+}
+
+// getNodeStabilityScore calculates a stability score for a node (higher is more stable)
+func (s *CANServer) getNodeStabilityScore(nodeID node.NodeID) float64 {
+	// Start with a baseline score
+	score := 1.0
+	
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	// If it's an immediate neighbor, we may have heartbeat history
+	if lastHeartbeat, exists := s.Node.Heartbeats[nodeID]; exists {
+		// Add stability based on heartbeat consistency
+		hoursSinceJoin := time.Since(lastHeartbeat).Hours() + 1.0 // Add 1 to avoid division by zero
+		score += math.Min(hoursSinceJoin / 24.0, 1.0) // Bonus for nodes that have been around longer (max 1.0)
+	}
+	
+	return score
+}
+
+// getAdjacentNeighbors returns neighbors that are adjacent to a zone
+func (s *CANServer) getAdjacentNeighbors(zone *node.Zone) map[node.NodeID]*node.NeighborInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	
+	adjacentNeighbors := make(map[node.NodeID]*node.NeighborInfo)
+	
+	// Check all immediate neighbors
+	for id, neighbor := range s.Node.Neighbors {
+		if isZonesAdjacent(neighbor.Zone, zone, s.Config.Dimensions) {
+			adjacentNeighbors[id] = neighbor
+		}
+	}
+	
+	return adjacentNeighbors
+}
+
+// selectTakeoverNeighbor selects the best neighbor to take over a failed node's zone
+func (s *CANServer) selectTakeoverNeighbor(failedNodeID node.NodeID, failedZone *node.Zone) (node.NodeID, bool) {
+	candidates := make(map[node.NodeID]float64)
+	
+	// Get all adjacent neighbors
+	adjacentNeighbors := s.getAdjacentNeighbors(failedZone)
+	
+	// Skip if no adjacent neighbors
+	if len(adjacentNeighbors) == 0 {
+		return "", false
+	}
+	
+	// Skip the failed node itself
+	delete(adjacentNeighbors, failedNodeID)
+	
+	// If we're the only adjacent neighbor, we take over
+	if len(adjacentNeighbors) == 1 {
+		for id := range adjacentNeighbors {
+			if id == s.Node.ID {
+				return s.Node.ID, true
 			}
 		}
-
-		return nil
 	}
-
-	// If not responsible, find the next hop
-	nextHop, isResponsible := s.Router.FindResponsibleNode(s.Node, key)
-	if isResponsible {
-		// This should not happen, as we already checked if the local node is responsible
-		return fmt.Errorf("internal error: router says local node is responsible but zone check failed")
+	
+	// Calculate takeover scores for each neighbor
+	for id := range adjacentNeighbors {
+		// Skip the failed node
+		if id == failedNodeID {
+			continue
+		}
+		
+		// Calculate load score (lower is better)
+		loadScore := s.getNodeLoadScore(id)
+		
+		// Calculate stability score (higher is better)
+		stabilityScore := s.getNodeStabilityScore(id)
+		
+		// Calculate takeover score (lower is better)
+		// We divide by stability to favor more stable nodes
+		score := loadScore / stabilityScore
+		
+		candidates[id] = score
 	}
-
-	if nextHop == nil {
-		return fmt.Errorf("no route to responsible node")
+	
+	// Select the neighbor with the lowest score
+	bestNeighborID := node.NodeID("")
+	bestScore := math.MaxFloat64
+	
+	for id, score := range candidates {
+		if score < bestScore {
+			bestScore = score
+			bestNeighborID = id
+		}
 	}
+	
+	return bestNeighborID, bestNeighborID != ""
+}
 
-	// Forward the request to the next hop
-	client, conn, err := ConnectToNode(ctx, nextHop.Address)
+// selectBackupNeighbor selects a second neighbor to help with zone takeover
+func (s *CANServer) selectBackupNeighbor(failedNodeID node.NodeID, failedZone *node.Zone, primaryNeighborID node.NodeID) node.NodeID {
+	// Get adjacent neighbors
+	adjacentNeighbors := s.getAdjacentNeighbors(failedZone)
+	
+	// Remove primary neighbor and failed node
+	delete(adjacentNeighbors, primaryNeighborID)
+	delete(adjacentNeighbors, failedNodeID)
+	
+	if len(adjacentNeighbors) == 0 {
+		return ""
+	}
+	
+	// Calculate scores for each remaining neighbor
+	candidates := make(map[node.NodeID]float64)
+	
+	for id := range adjacentNeighbors {
+		// Calculate load score (lower is better)
+		loadScore := s.getNodeLoadScore(id)
+		
+		// Calculate stability score (higher is better)
+		stabilityScore := s.getNodeStabilityScore(id)
+		
+		// Calculate takeover score (lower is better)
+		score := loadScore / stabilityScore
+		
+		candidates[id] = score
+	}
+	
+	// Select the neighbor with the lowest score
+	bestNeighborID := node.NodeID("")
+	bestScore := math.MaxFloat64
+	
+	for id, score := range candidates {
+		if score < bestScore {
+			bestScore = score
+			bestNeighborID = id
+		}
+	}
+	
+	return bestNeighborID
+}
+
+// notifyZoneTakeover notifies a neighbor to take over a zone
+func (s *CANServer) notifyZoneTakeover(ctx context.Context, neighborID node.NodeID, zoneToTake *node.Zone) error {
+	s.mu.RLock()
+	var neighborAddress string
+	
+	// Find the neighbor's address
+	if neighbor, exists := s.Node.Neighbors[neighborID]; exists {
+		neighborAddress = neighbor.Address
+	} else if extNeighbor, exists := s.Node.ExtendedNeighbors[neighborID]; exists {
+		neighborAddress = extNeighbor.Address
+	} else {
+		s.mu.RUnlock()
+		return fmt.Errorf("neighbor %s not found", neighborID)
+	}
+	s.mu.RUnlock()
+	
+	// Connect to the neighbor
+	client, conn, err := ConnectToNode(ctx, neighborAddress)
 	if err != nil {
-		return fmt.Errorf("failed to connect to next hop: %w", err)
+		return fmt.Errorf("failed to connect to neighbor %s: %v", neighborID, err)
 	}
 	defer conn.Close()
-
-	// Create the request
-	req := &pb.DeleteRequest{
-		Key:     key,
-		Forward: false, // Not a forwarded request yet
-	}
-
-	// Send the request
-	resp, err := client.Delete(ctx, req)
-	if err != nil {
-		return fmt.Errorf("failed to forward DELETE request: %w", err)
-	}
-
-	if !resp.Success {
-		return fmt.Errorf("DELETE request was unsuccessful")
-	}
+	
+	// We don't have a direct "TakeOverZone" RPC, so we simulate it
+	// by informing the neighbor about the failed node, which will
+	// trigger their shouldTakeOverZone check
+	
+	// This is a simplification - in a real implementation, we would
+	// add a specific RPC for this, but we're minimizing code changes
+	
+	// Create fake heartbeat to get the neighbor to notice the failed node
+	// This is just informational - the neighbor will decide if they should take over
+	log.Printf("Notifying neighbor %s to consider taking over zone", neighborID)
+	
+	// The exact implementation depends on the protocol
+	// For now, we just log it and assume the neighbor will detect the failure through
+	// their own heartbeat mechanism
 
 	return nil
 }
@@ -829,3 +1282,196 @@ func (s *CANServer) Delete(ctx context.Context, key string) error {
 // 	log.Printf("CAN DHT node starting on %s", address)
 // 	return grpcServer.Serve(lis)
 // }
+
+// handleEncryptionError handles encryption-related errors
+func (s *CANServer) handleEncryptionError(key string, err error) error {
+	log.Printf("Encryption error for key %s: %v", key, err)
+	
+	// Check if this is a key corruption issue
+	if errors.Is(err, crypto.ErrKeyCorruption) {
+		log.Printf("Key corruption detected, attempting recovery")
+		
+		// Try to recover using persistent key manager if available
+		if pkm, ok := s.KeyManager.(*crypto.PersistentKeyManager); ok {
+			if recErr := pkm.ResetToDefaultKey(); recErr != nil {
+				log.Printf("Failed to recover from key corruption: %v", recErr)
+			} else {
+				log.Printf("Successfully reset to default key")
+			}
+		}
+	}
+	
+	// Wrap the error for better context
+	if crypto.IsEncryptionError(err) {
+		// Already an encryption error, just return it
+		return err
+	}
+	
+	// Wrap in an encryption error
+	return crypto.NewEncryptionError("store", key, err)
+}
+
+// startCacheMaintenance starts the background process for cleaning expired cache entries
+func (s *CANServer) startCacheMaintenance() {
+	if !s.Config.EnableCache || s.Cache == nil {
+		return
+	}
+
+	// Clean expired entries every minute
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				removed := s.Cache.CleanExpired()
+				if removed > 0 {
+					log.Printf("Cache maintenance: removed %d expired entries", removed)
+				}
+				
+				// Log cache metrics periodically
+				metrics := s.Cache.GetMetrics()
+				log.Printf("Cache stats: %d hits, %d misses, %d evictions, hit rate: %.2f%%", 
+					metrics.Hits, metrics.Misses, metrics.Evictions, 
+					float64(metrics.Hits)/float64(metrics.Hits+metrics.Misses)*100)
+			case <-s.ctx.Done():
+				log.Printf("Cache maintenance stopped")
+				return
+			}
+		}
+	}()
+}
+
+// getNodeRole returns the role of a node, or RoleStandard if unknown
+func (s *CANServer) getNodeRole(nodeID node.NodeID) NodeRole {
+	// TODO: In a more complete implementation, we would maintain
+	// a map of node IDs to roles based on information exchanged during
+	// the heartbeat protocol or node join process.
+	// For now, we assume all nodes are standard roles.
+	return RoleStandard
+}
+
+// ForwardPutToNode forwards a PUT request to a specific node
+func (s *CANServer) ForwardPutToNode(ctx context.Context, key string, value []byte, targetNode *node.NodeInfo) (*pb.PutResponse, error) {
+	// Create a client connection to the target node
+	conn, err := s.ConnectToNode(ctx, targetNode.Address)
+	if err != nil {
+		return &pb.PutResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to connect to target node: %v", err),
+		}, err
+	}
+	defer conn.Close()
+
+	// Create a client
+	client := pb.NewCANServiceClient(conn)
+
+	// Forward the request with the forward flag set
+	req := &pb.PutRequest{
+		Key:     key,
+		Value:   value,
+		Forward: true,
+	}
+
+	// Call the Put method on the target node
+	return client.Put(ctx, req)
+}
+
+// ForwardGetToNode forwards a GET request to a specific node
+func (s *CANServer) ForwardGetToNode(ctx context.Context, key string, targetNode *node.NodeInfo) (*pb.GetResponse, error) {
+	// Create a client connection to the target node
+	conn, err := s.ConnectToNode(ctx, targetNode.Address)
+	if err != nil {
+		return &pb.GetResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to connect to target node: %v", err),
+		}, err
+	}
+	defer conn.Close()
+
+	// Create a client
+	client := pb.NewCANServiceClient(conn)
+
+	// Forward the request with the forward flag set
+	req := &pb.GetRequest{
+		Key:     key,
+		Forward: true,
+	}
+
+	// Call the Get method on the target node
+	return client.Get(ctx, req)
+}
+
+// ForwardDeleteToNode forwards a DELETE request to a specific node
+func (s *CANServer) ForwardDeleteToNode(ctx context.Context, key string, targetNode *node.NodeInfo) (*pb.DeleteResponse, error) {
+	// Create a client connection to the target node
+	conn, err := s.ConnectToNode(ctx, targetNode.Address)
+	if err != nil {
+		return &pb.DeleteResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to connect to target node: %v", err),
+		}, err
+	}
+	defer conn.Close()
+
+	// Create a client
+	client := pb.NewCANServiceClient(conn)
+
+	// Forward the request with the forward flag set
+	req := &pb.DeleteRequest{
+		Key:     key,
+		Forward: true,
+	}
+
+	// Call the Delete method on the target node
+	return client.Delete(ctx, req)
+}
+
+// ForwardPut forwards a PUT request to the responsible node
+func (s *CANServer) ForwardPut(ctx context.Context, key string, value []byte) (*pb.PutResponse, error) {
+	// Find the node responsible for the key
+	keyPoint := s.Router.HashToPoint(key)
+	responsibleNodeInfo, err := s.Router.FindClosestNeighbor(keyPoint)
+	if err != nil {
+		return &pb.PutResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to find responsible node: %v", err),
+		}, err
+	}
+
+	// Forward the request to the responsible node
+	return s.ForwardPutToNode(ctx, key, value, responsibleNodeInfo)
+}
+
+// ForwardGet forwards a GET request to the responsible node
+func (s *CANServer) ForwardGet(ctx context.Context, key string) (*pb.GetResponse, error) {
+	// Find the node responsible for the key
+	keyPoint := s.Router.HashToPoint(key)
+	responsibleNodeInfo, err := s.Router.FindClosestNeighbor(keyPoint)
+	if err != nil {
+		return &pb.GetResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to find responsible node: %v", err),
+		}, err
+	}
+
+	// Forward the request to the responsible node
+	return s.ForwardGetToNode(ctx, key, responsibleNodeInfo)
+}
+
+// ForwardDelete forwards a DELETE request to the responsible node
+func (s *CANServer) ForwardDelete(ctx context.Context, key string) (*pb.DeleteResponse, error) {
+	// Find the node responsible for the key
+	keyPoint := s.Router.HashToPoint(key)
+	responsibleNodeInfo, err := s.Router.FindClosestNeighbor(keyPoint)
+	if err != nil {
+		return &pb.DeleteResponse{
+			Success: false,
+			Message: fmt.Sprintf("failed to find responsible node: %v", err),
+		}, err
+	}
+
+	// Forward the request to the responsible node
+	return s.ForwardDeleteToNode(ctx, key, responsibleNodeInfo)
+}
