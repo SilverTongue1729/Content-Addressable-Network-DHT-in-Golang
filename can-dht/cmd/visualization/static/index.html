@@ -182,11 +182,108 @@
             border-color: #28a745 !important;
             color: white !important;
         }
+        
+        /* Authentication related styles */
+        #auth-panel {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .login-panel, .register-panel {
+            display: none;
+        }
+        
+        .user-info {
+            display: none;
+        }
+        
+        .tab-buttons {
+            margin-bottom: 15px;
+        }
+        
+        .tab-buttons button {
+            background: none;
+            border: none;
+            padding: 8px 15px;
+            margin-right: 5px;
+            border-bottom: 2px solid transparent;
+            color: #6c757d;
+        }
+        
+        .tab-buttons button.active {
+            border-bottom: 2px solid #007bff;
+            color: #007bff;
+            font-weight: bold;
+        }
+        
+        #permissions-panel {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+            margin-top: 20px;
+        }
     </style>
 </head>
 <body>
     <div class="container mt-4">
         <h1>Content Addressable Network (CAN) DHT Visualization</h1>
+        
+        <!-- Authentication Panel -->
+        <div id="auth-panel" class="mb-3">
+            <div class="not-logged-in">
+                <div class="tab-buttons">
+                    <button class="tab-button active" data-target="login-panel">Login</button>
+                    <button class="tab-button" data-target="register-panel">Register</button>
+                </div>
+
+                <div class="login-panel" style="display: block;">
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <input type="text" id="login-username" class="form-control" placeholder="Username">
+                        </div>
+                        <div class="col-md-4">
+                            <input type="password" id="login-password" class="form-control" placeholder="Password">
+                        </div>
+                        <div class="col-md-4">
+                            <button id="login-btn" class="btn btn-primary w-100">Login</button>
+                        </div>
+                    </div>
+                    <div class="form-text text-muted">
+                        Default admin: admin/admin123 | Default user: user/user123
+                    </div>
+                </div>
+
+                <div class="register-panel">
+                    <div class="row mb-3">
+                        <div class="col-md-4">
+                            <input type="text" id="register-username" class="form-control" placeholder="Choose Username">
+                        </div>
+                        <div class="col-md-4">
+                            <input type="password" id="register-password" class="form-control" placeholder="Choose Password">
+                        </div>
+                        <div class="col-md-4">
+                            <button id="register-btn" class="btn btn-success w-100">Register</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="user-info">
+                <div class="row">
+                    <div class="col-md-8">
+                        <span>Logged in as: <strong id="current-username">Username</strong></span>
+                        <span class="ms-3 text-muted" id="user-role">(Role: User)</span>
+                    </div>
+                    <div class="col-md-4 text-end">
+                        <button id="logout-btn" class="btn btn-outline-danger">Logout</button>
+                    </div>
+                </div>
+            </div>
+        </div>
         
         <div class="row">
             <div class="col-md-8">
@@ -199,7 +296,7 @@
                         <h5>Network Operations</h5>
                         <button id="preview-join-btn" class="btn btn-outline-primary">Preview Join Point</button>
                         <button id="add-node-btn" class="btn btn-primary">Add Node</button>
-                        <button id="reset-btn" class="btn btn-warning">Reset Simulation</button>
+                        <button id="reset-btn" class="btn btn-warning admin-only" data-requires="admin">Reset Simulation</button>
                     </div>
                     <div class="control-group">
                         <h5>Replication Settings</h5>
@@ -309,36 +406,61 @@
             <div class="col-md-4">
                 <!-- Information Panel -->
                 <div id="info-panel">
-                    <div class="info-title">System Information</div>
-                    <div class="info-content">
-                        <div>Nodes: <span id="node-count">0</span></div>
-                        <div>Key-Value Pairs: <span id="kv-count">0</span></div>
-                        <div class="mt-3">Last Action:</div>
-                        <div id="last-action">None</div>
+                    <div class="info-title">Network Information</div>
+                    <div class="info-content" id="node-info">
+                        Select a node to view its details.
                     </div>
-                    
-                    <hr>
-                    
-                    <div class="info-title">Selected Entity Info</div>
-                    <div id="selected-info" class="info-content">
-                        <em>Click on a node or key-value pair for details</em>
+                </div>
+                
+                <!-- Permissions Management Panel -->
+                <div id="permissions-panel" class="mt-4">
+                    <div class="info-title">Permissions Management</div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <input type="text" id="permission-key" class="form-control" placeholder="Key to manage permissions for">
+                        </div>
+                        <div class="col-md-6">
+                            <input type="text" id="permission-username" class="form-control" placeholder="Username to grant permissions to">
+                        </div>
                     </div>
-                    
-                    <hr>
-                    
-                    <div class="info-title">CAN DHT Explanation</div>
-                    <div class="info-content">
-                        <p>A Content Addressable Network (CAN) is a distributed hash table that maps keys to values in a multi-dimensional coordinate space.</p>
-                        <p><strong>Nodes:</strong> Each node owns a zone in the coordinate space.</p>
-                        <p><strong>Key-Value Pairs:</strong> Keys are hashed to coordinate points and stored on the responsible node.</p>
-                        <p><strong>Routing:</strong> Requests are routed through neighbors based on their proximity to the target point.</p>
-                        <p><strong>Node Joining:</strong> When a new node joins, it:</p>
-                        <ol style="padding-left: 20px; margin-top: 0;">
-                            <li>Picks a random point in the space (yellow flash)</li>
-                            <li>The node owning that point splits its zone</li>
-                            <li>The new node takes one half of the split zone</li>
-                            <li>Key-value pairs are redistributed accordingly</li>
-                        </ol>
+                    <div class="row mb-3">
+                        <div class="col-md-12">
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="perm-read" value="1">
+                                <label class="form-check-label" for="perm-read">Read</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="perm-create" value="2">
+                                <label class="form-check-label" for="perm-create">Create</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="perm-update" value="4">
+                                <label class="form-check-label" for="perm-update">Update</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="perm-delete" value="8">
+                                <label class="form-check-label" for="perm-delete">Delete</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="checkbox" id="perm-admin" value="16">
+                                <label class="form-check-label" for="perm-admin">Admin</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="row">
+                        <div class="col-md-6">
+                            <button id="grant-perm-btn" class="btn btn-success">Grant Permissions</button>
+                        </div>
+                        <div class="col-md-6">
+                            <button id="revoke-perm-btn" class="btn btn-danger">Revoke All Permissions</button>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <div class="alert alert-info">
+                                <strong>Note:</strong> You can only manage permissions for keys that you own. Revoking permissions removes all access for the specified user.
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -2244,6 +2366,559 @@
                 })
                 .attr('stroke-dasharray', d => d.onFailedNode ? '3,3' : 'none');
         };
+    </script>
+
+    <!-- Authentication and Permission JavaScript -->
+    <script>
+        // Authentication state
+        let authState = {
+            isLoggedIn: false,
+            username: null,
+            token: null,
+            isAdmin: false
+        };
+        
+        // Set up auth UI interaction
+        document.addEventListener('DOMContentLoaded', function() {
+            // Tab switching
+            document.querySelectorAll('.tab-button').forEach(button => {
+                button.addEventListener('click', function() {
+                    // Remove active class from all tabs
+                    document.querySelectorAll('.tab-button').forEach(btn => {
+                        btn.classList.remove('active');
+                    });
+                    
+                    // Add active class to clicked tab
+                    this.classList.add('active');
+                    
+                    // Hide all panels
+                    document.querySelector('.login-panel').style.display = 'none';
+                    document.querySelector('.register-panel').style.display = 'none';
+                    
+                    // Show the target panel
+                    const targetPanel = this.getAttribute('data-target');
+                    document.querySelector('.' + targetPanel).style.display = 'block';
+                });
+            });
+            
+            // Login button
+            document.getElementById('login-btn').addEventListener('click', function() {
+                const username = document.getElementById('login-username').value;
+                const password = document.getElementById('login-password').value;
+                
+                if (!username || !password) {
+                    alert('Please enter both username and password');
+                    return;
+                }
+                
+                login(username, password);
+            });
+            
+            // Register button
+            document.getElementById('register-btn').addEventListener('click', function() {
+                const username = document.getElementById('register-username').value;
+                const password = document.getElementById('register-password').value;
+                
+                if (!username || !password) {
+                    alert('Please enter both username and password');
+                    return;
+                }
+                
+                register(username, password);
+            });
+            
+            // Logout button
+            document.getElementById('logout-btn').addEventListener("click", function() {
+                logout();
+            });
+            
+            // Check for existing credentials in localStorage
+            checkSavedAuth();
+            
+            // Update UI based on auth state
+            updateAuthUI();
+        });
+        
+        // Login function
+        function login(username, password) {
+            // Create Basic auth token
+            const token = btoa(`${username}:${password}`);
+            
+            // Test the credentials by fetching user info
+            fetch('/auth/me', {
+                headers: {
+                    'Authorization': `Basic ${token}`
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Login failed');
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Login successful
+                authState.isLoggedIn = true;
+                authState.username = username;
+                authState.token = token;
+                
+                // Check if user is admin
+                authState.isAdmin = username === 'admin';
+                
+                // Save auth state to localStorage
+                saveAuthState();
+                
+                // Update UI
+                updateAuthUI();
+                
+                console.log('Logged in successfully as', username);
+            })
+            .catch(error => {
+                console.error('Login error:', error);
+                alert('Login failed. Please check your credentials.');
+            });
+        }
+        
+        // Register function
+        function register(username, password) {
+            fetch('/auth/register', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    username,
+                    password
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Registration failed');
+                    });
+                }
+                return response.json();
+            })
+            .then(data => {
+                // Registration successful, now log in
+                alert('Registration successful! You can now log in.');
+                
+                // Switch to login tab
+                document.querySelector('.tab-button[data-target="login-panel"]').click();
+                
+                // Pre-fill login form
+                document.getElementById('login-username').value = username;
+                document.getElementById('login-password').value = password;
+            })
+            .catch(error => {
+                console.error('Registration error:', error);
+                alert(error.message);
+            });
+        }
+        
+        // Logout function
+        function logout() {
+            // Clear auth state
+            authState.isLoggedIn = false;
+            authState.username = null;
+            authState.token = null;
+            authState.isAdmin = false;
+            
+            // Clear localStorage
+            localStorage.removeItem('authState');
+            
+            // Update UI
+            updateAuthUI();
+        }
+        
+        // Save auth state to localStorage
+        function saveAuthState() {
+            localStorage.setItem('authState', JSON.stringify({
+                isLoggedIn: authState.isLoggedIn,
+                username: authState.username,
+                token: authState.token,
+                isAdmin: authState.isAdmin
+            }));
+        }
+        
+        // Check for saved auth state in localStorage
+        function checkSavedAuth() {
+            const savedAuth = localStorage.getItem('authState');
+            if (savedAuth) {
+                const parsed = JSON.parse(savedAuth);
+                authState.isLoggedIn = parsed.isLoggedIn;
+                authState.username = parsed.username;
+                authState.token = parsed.token;
+                authState.isAdmin = parsed.isAdmin;
+                
+                // Verify the token is still valid
+                fetch('/auth/me', {
+                    headers: {
+                        'Authorization': `Basic ${authState.token}`
+                    }
+                })
+                .then(response => {
+                    if (!response.ok) {
+                        // Token invalid, logout
+                        logout();
+                    }
+                })
+                .catch(() => {
+                    // Error verifying token, logout
+                    logout();
+                });
+            }
+        }
+        
+        // Update UI based on auth state
+        function updateAuthUI() {
+            if (authState.isLoggedIn) {
+                // Show logged-in UI
+                document.querySelector('.not-logged-in').style.display = 'none';
+                document.querySelector('.user-info').style.display = 'block';
+                
+                // Update username display
+                document.getElementById('current-username').textContent = authState.username;
+                
+                // Update role display
+                document.getElementById('user-role').textContent = 
+                    authState.isAdmin ? '(Role: Admin)' : '(Role: User)';
+                
+                // Enable/disable admin-only features
+                document.querySelectorAll('[data-requires="admin"]').forEach(element => {
+                    if (authState.isAdmin) {
+                        element.classList.remove('disabled-btn');
+                    } else {
+                        element.classList.add('disabled-btn');
+                    }
+                });
+                
+                // Enable controls that require authentication
+                enableControls();
+            } else {
+                // Show login UI
+                document.querySelector('.not-logged-in').style.display = 'block';
+                document.querySelector('.user-info').style.display = 'none';
+                
+                // Disable controls that require authentication
+                disableControls();
+            }
+        }
+        
+        // Enable controls that require authentication
+        function enableControls() {
+            // Network operations
+            document.getElementById('add-node-btn').classList.remove('disabled-btn');
+            document.getElementById('preview-join-btn').classList.remove('disabled-btn');
+            
+            // Replication settings
+            document.getElementById('set-replication-btn').classList.remove('disabled-btn');
+            document.getElementById('replicate-key-btn').classList.remove('disabled-btn');
+            
+            // Key-value operations will be enabled separately
+        }
+        
+        // Disable controls that require authentication
+        function disableControls() {
+            // Network operations
+            document.getElementById('add-node-btn').classList.add('disabled-btn');
+            document.getElementById('preview-join-btn').classList.add('disabled-btn');
+            document.getElementById('reset-btn').classList.add('disabled-btn');
+            
+            // Replication settings
+            document.getElementById('set-replication-btn').classList.add('disabled-btn');
+            document.getElementById('replicate-key-btn').classList.add('disabled-btn');
+            
+            // Key-value operations buttons
+            document.querySelectorAll('#kv-operations button').forEach(button => {
+                button.classList.add('disabled-btn');
+            });
+        }
+        
+        // Add authorization header to fetch requests
+        function fetchWithAuth(url, options = {}) {
+            // Clone the options to avoid modifying the original
+            const authOptions = { ...options };
+            
+            // Add headers if they don't exist
+            if (!authOptions.headers) {
+                authOptions.headers = {};
+            }
+            
+            // Add authorization header if logged in
+            if (authState.isLoggedIn) {
+                authOptions.headers['Authorization'] = `Basic ${authState.token}`;
+            }
+            
+            return fetch(url, authOptions);
+        }
+        
+        // Override the existing fetch calls in the main script
+        const originalFetch = window.fetch;
+        window.fetch = function(url, options) {
+            // Skip authentication for state API which is public
+            if (url === '/api/state') {
+                return originalFetch(url, options);
+            }
+            
+            return fetchWithAuth(url, options);
+        };
+
+        // Handle PUT operation
+        document.getElementById('put-btn').addEventListener('click', function() {
+            // Get key and value from input fields
+            const key = document.getElementById('put-key-input').value.trim();
+            const value = document.getElementById('put-value-input').value.trim();
+            
+            if (!key || !value) {
+                alert("Both key and value are required");
+                return;
+            }
+            
+            // Check if user is authenticated
+            if (!authState.isLoggedIn) {
+                alert("You must be logged in to perform this operation");
+                return;
+            }
+            
+            // Make the PUT request to the secure endpoint
+            fetchWithAuth('/kv/put', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    key: key,
+                    value: value
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to store key-value pair');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Key-value pair stored:', data);
+                // Add to the operations log
+                addToOperationLog(`PUT: ${key} => ${value}`);
+                // Refresh the visualization
+                fetchData();
+            })
+            .catch(error => {
+                console.error('Error storing key-value pair:', error);
+                alert('Error storing key-value pair: ' + error.message);
+            });
+        });
+
+        // Handle GET operation
+        document.getElementById('get-btn').addEventListener('click', function() {
+            // Get key from input field
+            const key = document.getElementById('get-key-input').value.trim();
+            
+            if (!key) {
+                alert("Key is required");
+                return;
+            }
+            
+            // Check if user is authenticated
+            if (!authState.isLoggedIn) {
+                alert("You must be logged in to perform this operation");
+                return;
+            }
+            
+            // Make the GET request to the secure endpoint
+            fetchWithAuth(`/kv/get/${key}`)
+            .then(response => {
+                if (response.status === 404) {
+                    throw new Error('Key not found');
+                }
+                if (!response.ok) {
+                    throw new Error('Failed to get value');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Key-value pair retrieved:', data);
+                // Display the value
+                document.getElementById('get-result').value = data.value;
+                // Add to the operations log
+                addToOperationLog(`GET: ${key} => ${data.value}`);
+                // Refresh the visualization (to show the routing path)
+                fetchData();
+            })
+            .catch(error => {
+                console.error('Error retrieving value:', error);
+                alert('Error retrieving value: ' + error.message);
+                document.getElementById('get-result').value = 'Error: ' + error.message;
+            });
+        });
+        
+        // Handle DELETE operation
+        document.getElementById('delete-btn').addEventListener('click', function() {
+            // Get key from input field
+            const key = document.getElementById('delete-key-input').value.trim();
+            
+            if (!key) {
+                alert("Key is required");
+                return;
+            }
+            
+            // Check if user is authenticated
+            if (!authState.isLoggedIn) {
+                alert("You must be logged in to perform this operation");
+                return;
+            }
+            
+            // Make the DELETE request to the secure endpoint
+            fetchWithAuth(`/kv/delete/${key}`, {
+                method: 'DELETE'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to delete key-value pair');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Key-value pair deleted:', data);
+                // Add to the operations log
+                addToOperationLog(`DELETE: ${key}`);
+                // Refresh the visualization
+                fetchData();
+            })
+            .catch(error => {
+                console.error('Error deleting key-value pair:', error);
+                alert('Error deleting key-value pair: ' + error.message);
+            });
+        });
+        
+        // Handle permission granting
+        document.getElementById('grant-perm-btn').addEventListener('click', function() {
+            const key = document.getElementById('permission-key').value.trim();
+            const username = document.getElementById('permission-username').value.trim();
+            
+            if (!key || !username) {
+                alert("Both key and username are required");
+                return;
+            }
+            
+            // Check if user is authenticated
+            if (!authState.isLoggedIn) {
+                alert("You must be logged in to manage permissions");
+                return;
+            }
+            
+            // Calculate permission value from checkboxes
+            let permValue = 0;
+            if (document.getElementById('perm-read').checked) {
+                permValue |= 1; // Read
+            }
+            if (document.getElementById('perm-create').checked) {
+                permValue |= 2; // Create
+            }
+            if (document.getElementById('perm-update').checked) {
+                permValue |= 4; // Update
+            }
+            if (document.getElementById('perm-delete').checked) {
+                permValue |= 8; // Delete
+            }
+            if (document.getElementById('perm-admin').checked) {
+                permValue |= 16; // Admin
+            }
+            
+            if (permValue === 0) {
+                alert("Please select at least one permission to grant");
+                return;
+            }
+            
+            // Make the grant permission request
+            fetchWithAuth(`/kv/permissions/${key}/${username}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    permission: permValue
+                })
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to grant permissions');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Permissions granted:', data);
+                alert(`Permissions granted to ${username} for key ${key}`);
+                // Add to the operations log
+                addToOperationLog(`GRANT PERMISSIONS: ${key} to ${username} (${permValue})`);
+            })
+            .catch(error => {
+                console.error('Error granting permissions:', error);
+                alert('Error granting permissions: ' + error.message);
+            });
+        });
+        
+        // Handle permission revoking
+        document.getElementById('revoke-perm-btn').addEventListener('click', function() {
+            const key = document.getElementById('permission-key').value.trim();
+            const username = document.getElementById('permission-username').value.trim();
+            
+            if (!key || !username) {
+                alert("Both key and username are required");
+                return;
+            }
+            
+            // Check if user is authenticated
+            if (!authState.isLoggedIn) {
+                alert("You must be logged in to manage permissions");
+                return;
+            }
+            
+            // Confirm revocation
+            if (!confirm(`Are you sure you want to revoke all permissions for ${username} on key ${key}?`)) {
+                return;
+            }
+            
+            // Make the revoke permission request
+            fetchWithAuth(`/kv/permissions/${key}/${username}`, {
+                method: 'DELETE'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Failed to revoke permissions');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Permissions revoked:', data);
+                alert(`All permissions revoked from ${username} for key ${key}`);
+                // Add to the operations log
+                addToOperationLog(`REVOKE PERMISSIONS: ${key} from ${username}`);
+            })
+            .catch(error => {
+                console.error('Error revoking permissions:', error);
+                alert('Error revoking permissions: ' + error.message);
+            });
+        });
+        
+        // Helper function to add operations to the log
+        function addToOperationLog(message) {
+            const logElement = document.getElementById('operation-log');
+            if (logElement) {
+                const entry = document.createElement('div');
+                entry.className = 'log-entry';
+                entry.innerHTML = `<span class="timestamp">${new Date().toLocaleTimeString()}</span>: ${message}`;
+                logElement.insertBefore(entry, logElement.firstChild);
+                
+                // Limit the number of log entries to keep
+                const entries = logElement.getElementsByClassName('log-entry');
+                if (entries.length > 50) {
+                    logElement.removeChild(entries[entries.length - 1]);
+                }
+            }
+        }
     </script>
 </body>
 </html> 

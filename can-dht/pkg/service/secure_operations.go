@@ -76,4 +76,69 @@ func (s *CANServer) VerifyDataIntegrity(ctx context.Context) map[string]error {
 
 	return integrityErrors
 }
+
+// SecurePutWithAuth stores a key-value pair with user authentication and authorization
+func (s *CANServer) SecurePutWithAuth(ctx context.Context, username, password, key string, value []byte) error {
+	// Verify authentication manager is enabled
+	if s.AuthManager == nil {
+		return fmt.Errorf("authentication is not enabled")
+	}
+
+	// Use the enhanced authentication manager to store the data
+	return s.AuthManager.CreateOwnData(username, password, key, value)
+}
+
+// SecureGetWithAuth retrieves a key-value pair with user authentication and authorization
+func (s *CANServer) SecureGetWithAuth(ctx context.Context, username, password, ownerName, key string) ([]byte, error) {
+	// Verify authentication manager is enabled
+	if s.AuthManager == nil {
+		return nil, fmt.Errorf("authentication is not enabled")
+	}
+
+	// If ownerName is empty, assume the user is trying to access their own data
+	if ownerName == "" {
+		return s.AuthManager.ReadOwnData(username, password, key)
+	}
+
+	// Use the enhanced authentication manager to retrieve the data
+	return s.AuthManager.ReadData(username, password, ownerName, key)
+}
+
+// SecureDeleteWithAuth deletes a key-value pair with user authentication and authorization
+func (s *CANServer) SecureDeleteWithAuth(ctx context.Context, username, password, ownerName, key string) error {
+	// Verify authentication manager is enabled
+	if s.AuthManager == nil {
+		return fmt.Errorf("authentication is not enabled")
+	}
+
+	// If ownerName is empty, assume the user is trying to delete their own data
+	if ownerName == "" {
+		return s.AuthManager.DeleteOwnData(username, password, key)
+	}
+
+	// Use the enhanced authentication manager to delete the data
+	return s.AuthManager.DeleteData(username, password, ownerName, key)
+}
+
+// ModifyPermissions allows changing permissions for a specific key
+func (s *CANServer) ModifyPermissions(ctx context.Context, adminUser, adminPassword, targetUser, ownerName, key string, permission crypto.Permission) error {
+	// Verify authentication manager is enabled
+	if s.AuthManager == nil {
+		return fmt.Errorf("authentication is not enabled")
+	}
+
+	// Use the enhanced authentication manager to modify permissions
+	return s.AuthManager.ModifyPermissions(adminUser, adminPassword, targetUser, ownerName, key, permission)
+}
+
+// ListUserData lists all data accessible to a user
+func (s *CANServer) ListUserData(ctx context.Context, username, password string) ([]string, error) {
+	// Verify authentication manager is enabled
+	if s.AuthManager == nil {
+		return nil, fmt.Errorf("authentication is not enabled")
+	}
+
+	// Use the enhanced authentication manager to list data
+	return s.AuthManager.ListDataKeys(username, password)
+}
  

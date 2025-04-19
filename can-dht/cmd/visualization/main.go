@@ -10,8 +10,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/can-dht/pkg/crypto"
 	"github.com/can-dht/pkg/node"
 	"github.com/can-dht/pkg/routing"
+	"github.com/can-dht/pkg/service"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +39,7 @@ type KeyValueInfo struct {
 	Encrypted     bool          // Add encryption status field
 	ReplicaNodes  []node.NodeID // List of nodes containing replicas
 	IsPrimaryCopy bool          // Whether this is the primary copy or a replica
+	Owner         string        // Owner of the data (for access control)
 }
 
 // KVResponse is the JSON-friendly version of KeyValueInfo for API responses
@@ -49,6 +52,7 @@ type KVResponse struct {
 	Encrypted     bool        `json:"Encrypted"`
 	ReplicaNodes  []string    `json:"ReplicaNodes"` // Convert NodeID to string for JSON
 	IsPrimaryCopy bool        `json:"IsPrimaryCopy"`
+	Owner         string      `json:"Owner"`
 }
 
 // RoutingPath represents a routing path for a request in the DHT
@@ -77,7 +81,29 @@ var colors = []string{"#ff5733", "#33ff57", "#3357ff", "#f3ff33", "#ff33f3", "#3
 // Router instance
 var router = routing.NewRouter(2) // 2D for visualization
 
+// Authentication manager for access control
+var authManager *crypto.EnhancedAuthManager
+
 func main() {
+	// Initialize the authentication manager
+	authManager = crypto.NewEnhancedAuthManager()
+
+	// Register a default admin user
+	err := authManager.RegisterUser("admin", "admin123")
+	if err != nil {
+		fmt.Printf("Error registering admin user: %v\n", err)
+	} else {
+		fmt.Printf("Created admin user: admin/admin123\n")
+	}
+
+	// Register a regular user
+	err = authManager.RegisterUser("user", "user123")
+	if err != nil {
+		fmt.Printf("Error registering regular user: %v\n", err)
+	} else {
+		fmt.Printf("Created regular user: user/user123\n")
+	}
+
 	// Initialize the simulation with a root node
 	initSimulation()
 
@@ -98,28 +124,539 @@ func main() {
 	r.Static("/static", "./cmd/visualization/static")
 	r.StaticFile("/", "./cmd/visualization/static/index.html")
 
+	// Create authentication middleware
+	authMiddleware := service.NewAuthMiddleware(authManager)
+
 	// API Routes
 	api := r.Group("/api")
 	{
+		// Public endpoints
 		api.GET("/state", getSimulationState)
-		api.POST("/node/add", addNode)
-		api.POST("/node/remove/:id", removeNode)
-		api.POST("/kv/put", putKeyValue)
-		api.GET("/kv/get/:key", getKeyValue)
-		api.DELETE("/kv/delete/:key", deleteKeyValue)
-
-		// Simple reset endpoint
-		api.POST("/reset", resetSimulation)
-
-		api.POST("/replication/factor", setReplicationFactor)
-		api.POST("/replication/replicate", replicateKey)
-		api.POST("/node/fail/:id", failNode)
-		api.POST("/node/recover/:id", recoverNode)
+		
+		// Endpoints that require authentication
+		secureAPI := api.Group("/")
+		secureAPI.Use(authMiddleware.Authenticate())
+		{
+			secureAPI.POST("/node/add", addNode)
+			secureAPI.POST("/node/remove/:id", removeNode)
+			secureAPI.POST("/replication/factor", setReplicationFactor)
+			secureAPI.POST("/replication/replicate", replicateKey)
+			secureAPI.POST("/node/fail/:id", failNode)
+			secureAPI.POST("/node/recover/:id", recoverNode)
+			
+			// Simple reset endpoint (admin only)
+			adminAPI := secureAPI.Group("/admin")
+			adminAPI.Use(authMiddleware.AdminOnly())
+			{
+				adminAPI.POST("/reset", resetSimulation)
+			}
+		}
+	}
+	
+	// Secure Key-Value operations with authentication
+	kvAPI := r.Group("/kv")
+	kvAPI.Use(authMiddleware.Authenticate())
+	{
+		// User's own data operations
+		kvAPI.POST("/put", secureKeyValuePut)
+		kvAPI.GET("/get/:key", secureKeyValueGet)
+		kvAPI.DELETE("/delete/:key", secureKeyValueDelete)
+		
+		// Shared data operations (with permission checks)
+		sharedAPI := kvAPI.Group("/shared")
+		{
+			sharedAPI.POST("/:owner/put", sharedKeyValuePut)
+			sharedAPI.GET("/:owner/get/:key", sharedKeyValueGet)
+			sharedAPI.DELETE("/:owner/delete/:key", sharedKeyValueDelete)
+		}
+		
+		// Permission management
+		permAPI := kvAPI.Group("/permissions")
+		{
+			permAPI.POST("/:key/:username", grantPermission)
+			permAPI.DELETE("/:key/:username", revokePermission)
+		}
+	}
+	
+	// Authentication API
+	authAPI := r.Group("/auth")
+	{
+		// Register endpoint (public)
+		authAPI.POST("/register", registerUser)
+		
+		// Secure auth endpoints
+		secureAuthAPI := authAPI.Group("/")
+		secureAuthAPI.Use(authMiddleware.Authenticate())
+		{
+			secureAuthAPI.GET("/me", getUserInfo)
+		}
 	}
 
 	// Start the server
 	fmt.Println("Starting visualization server on http://localhost:8090")
+	
+	// Register the authentication API endpoints
+	if authManager != nil {
+		fmt.Println("Authentication is enabled - registering auth endpoints")
+		// Create auth middleware
+		authMiddleware := service.NewAuthMiddleware(authManager)
+		
+		// Register auth API routes
+		authAPI := r.Group("/auth")
+		{
+			// Register endpoint (public)
+			authAPI.POST("/register", registerUser)
+			
+			// Secure auth endpoints
+			secureAuthAPI := authAPI.Group("/")
+			secureAuthAPI.Use(authMiddleware.Authenticate())
+			{
+				secureAuthAPI.GET("/me", getUserInfo)
+			}
+		}
+		
+		fmt.Println("Authentication API endpoints registered")
+	} else {
+		fmt.Println("WARNING: Authentication is disabled")
+	}
+	
 	r.Run(":8090")
+}
+
+// registerUser handles user registration requests
+func registerUser(c *gin.Context) {
+	// Check if authentication is enabled
+	if authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{
+			"error": "authentication is not enabled",
+		})
+		return
+	}
+
+	// Parse request body
+	var req struct {
+		Username string `json:"username" binding:"required"`
+		Password string `json:"password" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request format",
+		})
+		return
+	}
+
+	// Register the user
+	err := authManager.RegisterUser(req.Username, req.Password)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "user registered successfully",
+		"username": req.Username,
+	})
+}
+
+// getUserInfo returns information about the current user
+func getUserInfo(c *gin.Context) {
+	username, exists := c.Get("username")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, gin.H{
+			"error": "not authenticated",
+		})
+		return
+	}
+
+	// In a real implementation, we might fetch more user information here
+	c.JSON(http.StatusOK, gin.H{
+		"username": username,
+		"isAdmin": username == "admin", // Simple check for now
+	})
+}
+
+// secureKeyValuePut handles putting a key-value pair with authentication
+func secureKeyValuePut(c *gin.Context) {
+	username, _ := c.Get("username")
+	usernameStr := username.(string)
+	
+	// Get user's password from Basic Auth
+	_, password, _ := c.Request.BasicAuth()
+	
+	var req struct {
+		Key   string `json:"key" binding:"required"`
+		Value string `json:"value" binding:"required"`
+	}
+	
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request format",
+		})
+		return
+	}
+	
+	// Check if user can access the data
+	err := authManager.CreateOwnData(usernameStr, password, req.Key, []byte(req.Value))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to create data: " + err.Error(),
+		})
+		return
+	}
+	
+	// Add to the simulation
+	simulation.mu.Lock()
+	defer simulation.mu.Unlock()
+	
+	// Find the point for this key
+	point := router.Hash(req.Key)
+	
+	// Find the node responsible for this point
+	nodeID := findNodeForPoint(point)
+	
+	// Generate a color for this key
+	colorIndex := len(simulation.KeyValuePairs) % len(colors)
+	color := colors[colorIndex]
+	
+	// Store the key-value pair
+	kvInfo := KeyValueInfo{
+		Key:           req.Key,
+		Value:         req.Value,
+		Point:         point,
+		NodeID:        nodeID,
+		Color:         color,
+		Encrypted:     true,
+		ReplicaNodes:  []node.NodeID{}, // Start with no replicas
+		IsPrimaryCopy: true,
+		Owner:         usernameStr,
+	}
+	
+	// Add to simulation state and target node
+	simulation.KeyValuePairs[req.Key] = kvInfo
+	if node, exists := simulation.Nodes[nodeID]; exists {
+		node.Data[req.Key] = req.Value
+	}
+	
+	// Add routing path animation
+	path := simulateRouting("PUT", req.Key, nodeID)
+	routingPath := RoutingPath{
+		RequestType: "PUT",
+		Key:         req.Key,
+		Path:        path,
+		Active:      true,
+		StartTime:   time.Now(),
+	}
+	simulation.RoutingPaths = append(simulation.RoutingPaths, routingPath)
+	
+	// Auto-replicate if needed
+	if simulation.ReplicationFactor > 1 {
+		performReplication(req.Key, usernameStr)
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Key-value pair stored securely",
+		"key":     req.Key,
+		"nodeID":  nodeID,
+	})
+}
+
+// secureKeyValueGet handles getting a key-value pair with authentication
+func secureKeyValueGet(c *gin.Context) {
+	username, _ := c.Get("username")
+	usernameStr := username.(string)
+	
+	// Get user's password from Basic Auth
+	_, password, _ := c.Request.BasicAuth()
+	
+	key := c.Param("key")
+	
+	// Check if the key exists in our simulation
+	simulation.mu.RLock()
+	kvInfo, exists := simulation.KeyValuePairs[key]
+	simulation.mu.RUnlock()
+	
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Key not found",
+		})
+		return
+	}
+	
+	// Check if user owns the data or has permission
+	if kvInfo.Owner != usernameStr {
+		// If not the owner, check permissions
+		permission, err := authManager.GetPermission(usernameStr, password, kvInfo.Owner, key)
+		if err != nil || permission&crypto.PermissionRead == 0 {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "You don't have permission to access this data",
+			})
+			return
+		}
+	}
+	
+	// Get the data
+	value, err := authManager.ReadOwnData(usernameStr, password, key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to read data: " + err.Error(),
+		})
+		return
+	}
+	
+	// Add routing path animation
+	simulation.mu.Lock()
+	path := simulateRouting("GET", key, kvInfo.NodeID)
+	routingPath := RoutingPath{
+		RequestType: "GET",
+		Key:         key,
+		Path:        path,
+		Active:      true,
+		StartTime:   time.Now(),
+	}
+	simulation.RoutingPaths = append(simulation.RoutingPaths, routingPath)
+	simulation.mu.Unlock()
+	
+	c.JSON(http.StatusOK, gin.H{
+		"key":     key,
+		"value":   string(value),
+		"nodeID":  kvInfo.NodeID,
+		"owner":   kvInfo.Owner,
+	})
+}
+
+// secureKeyValueDelete handles deleting a key-value pair with authentication
+func secureKeyValueDelete(c *gin.Context) {
+	username, _ := c.Get("username")
+	usernameStr := username.(string)
+	
+	// Get user's password from Basic Auth
+	_, password, _ := c.Request.BasicAuth()
+	
+	key := c.Param("key")
+	
+	// Check if the key exists in our simulation
+	simulation.mu.RLock()
+	kvInfo, exists := simulation.KeyValuePairs[key]
+	simulation.mu.RUnlock()
+	
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "Key not found",
+		})
+		return
+	}
+	
+	// Check if user owns the data or has permission
+	if kvInfo.Owner != usernameStr {
+		// If not the owner, check permissions
+		permission, err := authManager.GetPermission(usernameStr, password, kvInfo.Owner, key)
+		if err != nil || permission&crypto.PermissionDelete == 0 {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "You don't have permission to delete this data",
+			})
+			return
+		}
+	}
+	
+	// Delete the data
+	err := authManager.DeleteOwnData(usernameStr, password, key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to delete data: " + err.Error(),
+		})
+		return
+	}
+	
+	// Remove from simulation
+	simulation.mu.Lock()
+	delete(simulation.KeyValuePairs, key)
+	if node, exists := simulation.Nodes[kvInfo.NodeID]; exists {
+		delete(node.Data, key)
+	}
+	
+	// Remove from replica nodes too
+	for _, replicaNodeID := range kvInfo.ReplicaNodes {
+		if replicaNode, exists := simulation.Nodes[replicaNodeID]; exists {
+			delete(replicaNode.Data, key)
+		}
+	}
+	
+	// Add routing path animation
+	path := simulateRouting("DELETE", key, kvInfo.NodeID)
+	routingPath := RoutingPath{
+		RequestType: "DELETE",
+		Key:         key,
+		Path:        path,
+		Active:      true,
+		StartTime:   time.Now(),
+	}
+	simulation.RoutingPaths = append(simulation.RoutingPaths, routingPath)
+	simulation.mu.Unlock()
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Key-value pair deleted",
+		"key":     key,
+	})
+}
+
+// sharedKeyValuePut handles putting a shared key-value pair
+func sharedKeyValuePut(c *gin.Context) {
+	c.JSON(http.StatusNotImplemented, gin.H{
+		"message": "Shared key-value PUT not implemented yet",
+	})
+}
+
+// sharedKeyValueGet handles getting a shared key-value pair
+func sharedKeyValueGet(c *gin.Context) {
+	username, _ := c.Get("username")
+	usernameStr := username.(string)
+	
+	// Get user's password from Basic Auth
+	_, password, _ := c.Request.BasicAuth()
+	
+	owner := c.Param("owner")
+	key := c.Param("key")
+	
+	// Get the data
+	value, err := authManager.ReadData(usernameStr, password, owner, key)
+	if err != nil {
+		c.JSON(http.StatusForbidden, gin.H{
+			"error": "Failed to read shared data: " + err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"key":     key,
+		"value":   string(value),
+		"owner":   owner,
+	})
+}
+
+// sharedKeyValueDelete handles deleting a shared key-value pair
+func sharedKeyValueDelete(c *gin.Context) {
+	c.JSON(http.StatusNotImplemented, gin.H{
+		"message": "Shared key-value DELETE not implemented yet",
+	})
+}
+
+// grantPermission grants permission to another user for a key
+func grantPermission(c *gin.Context) {
+	username, _ := c.Get("username")
+	usernameStr := username.(string)
+	
+	// Get user's password from Basic Auth
+	_, password, _ := c.Request.BasicAuth()
+	
+	key := c.Param("key")
+	targetUser := c.Param("username")
+	
+	var req struct {
+		Permission uint8 `json:"permission" binding:"required"`
+	}
+	
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "invalid request format",
+		})
+		return
+	}
+	
+	// Grant permission
+	err := authManager.ModifyPermissions(usernameStr, password, targetUser, usernameStr, key, crypto.Permission(req.Permission))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Permission granted",
+		"key":     key,
+		"user":    targetUser,
+		"permission": req.Permission,
+	})
+}
+
+// revokePermission revokes permission from another user for a key
+func revokePermission(c *gin.Context) {
+	username, _ := c.Get("username")
+	usernameStr := username.(string)
+	
+	// Get user's password from Basic Auth
+	_, password, _ := c.Request.BasicAuth()
+	
+	key := c.Param("key")
+	targetUser := c.Param("username")
+	
+	// Revoke by setting to PermissionNone
+	err := authManager.ModifyPermissions(usernameStr, password, targetUser, usernameStr, key, crypto.PermissionNone)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+	
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Permission revoked",
+		"key":     key,
+		"user":    targetUser,
+	})
+}
+
+// findNodeForPoint finds the node responsible for a point
+func findNodeForPoint(point node.Point) node.NodeID {
+	for id, n := range simulation.Nodes {
+		if !simulation.FailedNodes[id] && n.Zone.Contains(point) {
+			return id
+		}
+	}
+	// Default to root if no node is found
+	return "root"
+}
+
+// performReplication handles replicating a key to multiple nodes
+func performReplication(key string, owner string) {
+	kvInfo, exists := simulation.KeyValuePairs[key]
+	if !exists {
+		return
+	}
+	
+	primaryNodeID := kvInfo.NodeID
+	
+	// Get nodes for replication (excluding primary)
+	replicaNodes := selectNodesForReplication(primaryNodeID, simulation.ReplicationFactor-1)
+	
+	// Update replica nodes in key info
+	kvInfo.ReplicaNodes = replicaNodes
+	simulation.KeyValuePairs[key] = kvInfo
+	
+	// Add replicas to nodes
+	for _, replicaNodeID := range replicaNodes {
+		if node, exists := simulation.Nodes[replicaNodeID]; exists {
+			// Create replica in node's data store
+			node.Data[key] = kvInfo.Value
+			
+			// Create replica entry in key-value pairs
+			replicaKey := fmt.Sprintf("%s:replica:%s", key, replicaNodeID)
+			simulation.KeyValuePairs[replicaKey] = KeyValueInfo{
+				Key:           key,
+				Value:         kvInfo.Value,
+				Point:         kvInfo.Point, // Same point
+				NodeID:        replicaNodeID,
+				Color:         kvInfo.Color, // Same color
+				Encrypted:     true,
+				ReplicaNodes:  []node.NodeID{},
+				IsPrimaryCopy: false,
+				Owner:         owner,
+			}
+		}
+	}
 }
 
 // initSimulation initializes the simulation with a root node
@@ -260,6 +797,7 @@ func getSimulationState(c *gin.Context) {
 			Encrypted:     kv.Encrypted,
 			ReplicaNodes:  replicaNodes,
 			IsPrimaryCopy: kv.IsPrimaryCopy,
+			Owner:         kv.Owner,
 		})
 	}
 
@@ -309,6 +847,7 @@ func syncKeyValuePairsFromNodes() {
 					Encrypted:     false,
 					ReplicaNodes:  []node.NodeID{},
 					IsPrimaryCopy: true,
+					Owner:         "",
 				}
 
 				// Add to KeyValuePairs map
@@ -349,6 +888,7 @@ func syncKeyValuePairsFromNodes() {
 					Encrypted:     primaryKV.Encrypted,
 					ReplicaNodes:  nil,
 					IsPrimaryCopy: false,
+					Owner:         "",
 				}
 
 				simulation.KeyValuePairs[replicaKey] = replicaKV
@@ -589,6 +1129,7 @@ func putKeyValue(c *gin.Context) {
 		Encrypted:     request.Encrypt,
 		ReplicaNodes:  replicaNodes,
 		IsPrimaryCopy: true,
+		Owner:         "",
 	}
 
 	simulation.KeyValuePairs[key] = primaryKV
@@ -606,6 +1147,7 @@ func putKeyValue(c *gin.Context) {
 			Encrypted:     request.Encrypt,
 			ReplicaNodes:  nil, // No further nesting of replicas
 			IsPrimaryCopy: false,
+			Owner:         "",
 		}
 		simulation.KeyValuePairs[replicaKey] = replicaKV
 		fmt.Printf("Added replica key '%s' to key-value map\n", replicaKey)
@@ -1027,6 +1569,7 @@ func redistributeKeyValuePairs() {
 				Encrypted:     kv.Encrypted,
 				ReplicaNodes:  replicaNodes,
 				IsPrimaryCopy: true,
+				Owner:         "",
 			}
 
 			// Store in the node and simulation
@@ -1054,6 +1597,7 @@ func redistributeKeyValuePairs() {
 					Encrypted:     kv.Encrypted,
 					ReplicaNodes:  nil,
 					IsPrimaryCopy: false,
+					Owner:         "",
 				}
 				simulation.KeyValuePairs[replicaKey] = replicaKV
 			}
@@ -1390,6 +1934,7 @@ func replicateKey(c *gin.Context) {
 				Encrypted:     primaryKey.Encrypted,
 				ReplicaNodes:  nil, // Replicas don't have their own replicas
 				IsPrimaryCopy: false,
+				Owner:         "",
 			}
 
 			// Add to the KeyValuePairs map
@@ -1439,6 +1984,7 @@ func replicateKey(c *gin.Context) {
 				Encrypted:     primaryKey.Encrypted,
 				ReplicaNodes:  nil,
 				IsPrimaryCopy: false, // It's still a replica, just virtual
+				Owner:         "",
 			}
 
 			// Add to the KeyValuePairs map
@@ -1714,6 +2260,7 @@ func restoreDataToRecoveredNode(recoveredNodeID node.NodeID) {
 						Encrypted:     kvInfo.Encrypted,
 						ReplicaNodes:  nil,
 						IsPrimaryCopy: false,
+						Owner:         "",
 					}
 
 					simulation.KeyValuePairs[replicaMapKey] = replicaInfo

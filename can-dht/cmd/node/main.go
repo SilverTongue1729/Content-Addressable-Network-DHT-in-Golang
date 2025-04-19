@@ -13,8 +13,10 @@ import (
 
 	"github.com/can-dht/pkg/node"
 	"github.com/can-dht/pkg/service"
+	"github.com/can-dht/pkg/crypto"
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 var (
@@ -28,6 +30,8 @@ var (
 	heartbeatTimeout  = flag.Duration("timeout", 15*time.Second, "Heartbeat timeout")
 	debug             = flag.Bool("debug", false, "Enable debug logging")
 	nodeID            = flag.String("id", "", "Node ID (auto-generated if not provided)")
+	certDir           = flag.String("cert-dir", "certificates", "Directory for TLS certificates")
+	enableTLS         = flag.Bool("tls", true, "Enable TLS for gRPC connections")
 )
 
 func main() {
@@ -76,8 +80,28 @@ func main() {
 	server.Start()
 	log.Printf("CAN node started on %s", address)
 
-	// Set up a gRPC server
-	grpcServer := grpc.NewServer()
+	// Set up a gRPC server with optional TLS
+	var grpcServer *grpc.Server
+	if *enableTLS {
+		// Set up TLS
+		tlsManager, err := crypto.NewTLSManager(nodeIdentifier, *certDir)
+		if err != nil {
+			log.Fatalf("Failed to initialize TLS manager: %v", err)
+		}
+
+		tlsConfig, err := tlsManager.GetTLSConfig(address)
+		if err != nil {
+			log.Fatalf("Failed to get TLS config: %v", err)
+		}
+
+		creds := credentials.NewTLS(tlsConfig)
+		grpcServer = grpc.NewServer(grpc.Creds(creds))
+		log.Printf("TLS enabled for gRPC connections")
+	} else {
+		grpcServer = grpc.NewServer()
+		log.Printf("TLS disabled for gRPC connections")
+	}
+
 	server.StartGRPCServer(grpcServer)
 
 	// Set up a listener for the gRPC server
@@ -115,6 +139,7 @@ func main() {
 	log.Printf("- Dimensions: %d", *dimensions)
 	log.Printf("- Replication Factor: %d", *replicationFactor)
 	log.Printf("- Encryption: %v", *enableEncryption)
+	log.Printf("- TLS: %v", *enableTLS)
 
 	// Wait for interruption signal
 	sigCh := make(chan os.Signal, 1)

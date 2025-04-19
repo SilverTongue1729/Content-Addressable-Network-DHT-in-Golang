@@ -22,6 +22,11 @@ service CANService {
   
   // Fault tolerance operations
   rpc Takeover(TakeoverRequest) returns (TakeoverResponse);
+  
+  // Load balancing operations
+  rpc ReplicateHotKey(ReplicateHotKeyRequest) returns (ReplicateHotKeyResponse);
+  rpc AdjustZone(AdjustZoneRequest) returns (AdjustZoneResponse);
+  rpc UpdateNeighbor(UpdateNeighborRequest) returns (UpdateNeighborResponse);
 }
 
 // Point represents a d-dimensional point in the coordinate space
@@ -85,6 +90,8 @@ message PutRequest {
   string key = 1;
   bytes value = 2;
   bool forward = 3; // Whether this request should be forwarded to the responsible node
+  bool is_hot_key = 4; // Whether this is a hot key being replicated
+  int32 replica_count = 5; // Number of replicas for this key
 }
 
 // PutResponse acknowledges a successful put operation
@@ -154,4 +161,46 @@ message TakeoverRequest {
 message TakeoverResponse {
   bool accept_takeover = 1;
   double responder_zone_volume = 2;
+}
+
+// ReplicateHotKeyRequest is sent to replicate a hot key to a neighbor
+message ReplicateHotKeyRequest {
+  string key = 1;
+  bytes value = 2;
+  int32 access_count = 3;
+  int64 last_access_time = 4;
+}
+
+// ReplicateHotKeyResponse acknowledges a hot key replication
+message ReplicateHotKeyResponse {
+  bool success = 1;
+  string error = 2;
+}
+
+// AdjustZoneRequest is sent to request a zone adjustment for load balancing
+message AdjustZoneRequest {
+  string neighbor_id = 1;
+  int32 adjustment_dimension = 2;
+  double old_boundary_position = 3;
+  double new_boundary_position = 4;
+}
+
+// AdjustZoneResponse acknowledges a zone adjustment
+message AdjustZoneResponse {
+  bool success = 1;
+  string error = 2;
+  int32 keys_transferred = 3;
+}
+
+// UpdateNeighborRequest is sent to update a neighbor about a node's changed zone
+message UpdateNeighborRequest {
+  string id = 1;
+  string address = 2;
+  Zone zone = 3;
+}
+
+// UpdateNeighborResponse acknowledges a neighbor update
+message UpdateNeighborResponse {
+  bool success = 1;
+  string error = 2;
 } 

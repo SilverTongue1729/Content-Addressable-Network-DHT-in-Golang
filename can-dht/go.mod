@@ -3,7 +3,7 @@ module github.com/can-dht
 go 1.23.3
 
 require (
-	github.com/dgraph-io/badger/v3 v3.2103.5
+	github.com/boltdb/bolt v1.3.1
 	github.com/gin-contrib/cors v1.7.5
 	github.com/gin-gonic/gin v1.10.0
 	github.com/google/uuid v1.6.0

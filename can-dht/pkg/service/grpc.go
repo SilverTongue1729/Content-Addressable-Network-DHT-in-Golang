@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 
 	"github.com/can-dht/pkg/node"
 	pb "github.com/can-dht/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"crypto/x509"
 )
 
 // GRPCServer implements the gRPC server for the CAN service
@@ -31,11 +35,62 @@ func (s *GRPCServer) RegisterWithGRPCServer(grpcServer *grpc.Server) {
 
 // ConnectToNode connects to a remote node via gRPC
 func ConnectToNode(ctx context.Context, address string) (pb.CANServiceClient, *grpc.ClientConn, error) {
-	conn, err := grpc.DialContext(
+	// Check if TLS should be used
+	useTLS := true // Default to using TLS
+	
+	// Check if TLS certificates exist
+	homeDir, err := os.UserHomeDir()
+	if err == nil {
+		certDir := filepath.Join(homeDir, ".can-dht", "certificates")
+		if _, err := os.Stat(certDir); os.IsNotExist(err) {
+			// No certificate directory, fall back to insecure
+			useTLS = false
+		} else {
+			// Check for CA certificate
+			caCertPath := filepath.Join(certDir, "ca.crt")
+			if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
+				useTLS = false
+			}
+		}
+	} else {
+		// Couldn't get home directory, fall back to insecure
+		useTLS = false
+	}
+	
+	var conn *grpc.ClientConn
+	var dialOpts []grpc.DialOption
+	
+	if useTLS {
+		// Load the CA certificate
+		certDir := filepath.Join(homeDir, ".can-dht", "certificates")
+		caCertPath := filepath.Join(certDir, "ca.crt")
+		caCert, err := os.ReadFile(caCertPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read CA certificate: %w", err)
+		}
+		
+		// Create a certificate pool and add the CA certificate
+		certPool := x509.NewCertPool()
+		if !certPool.AppendCertsFromPEM(caCert) {
+			return nil, nil, fmt.Errorf("failed to add CA certificate to pool")
+		}
+		
+		// Set up TLS credentials with the CA certificate
+		creds := credentials.NewClientTLSFromCert(certPool, "")
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(creds))
+	} else {
+		// Fall back to insecure connection
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+	
+	// Add additional options
+	dialOpts = append(dialOpts, grpc.WithBlock())
+	
+	// Connect to the node
+	conn, err = grpc.DialContext(
 		ctx,
 		address,
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
+		dialOpts...,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to connect to node at %s: %w", address, err)

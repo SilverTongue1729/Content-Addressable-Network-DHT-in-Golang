@@ -3,26 +3,533 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{{ .title }}</title>
+    <title>CAN DHT Visualization</title>
     <link rel="stylesheet" href="/static/css/style.css">
     <script src="https://d3js.org/d3.v7.min.js"></script>
 </head>
 <body>
-    <h1>CAN DHT Visualization</h1>
+    <header>
+        <h1>Content-Addressable Network DHT</h1>
+    </header>
     
-    <div class="control-panel">
-        <h2>Node Controls</h2>
-        <div class="node-controls">
-            <select id="nodeSelect">
-                <option value="">Select a node...</option>
-            </select>
-            <button id="failNode" class="control-btn fail">Fail Node</button>
-            <button id="recoverNode" class="control-btn recover">Recover Node</button>
+    <div class="container">
+        <div class="control-panel">
+            <div class="panel">
+                <h2>Node Controls</h2>
+                <div class="control-group">
+                    <button id="addNode">Add Node</button>
+                    <button id="removeNode">Remove Selected Node</button>
+                    <button id="failNode">Fail Node</button>
+                    <button id="recoverNode">Recover Node</button>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>Data Operations</h2>
+                <div class="form-group">
+                    <label for="keyInput">Key:</label>
+                    <input type="text" id="keyInput" placeholder="Enter key">
+                </div>
+                <div class="form-group">
+                    <label for="valueInput">Value:</label>
+                    <input type="text" id="valueInput" placeholder="Enter value">
+                </div>
+                <div class="control-group">
+                    <button id="putData">PUT</button>
+                    <button id="getData">GET</button>
+                    <button id="deleteData">DELETE</button>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>Visualization Options</h2>
+                <div class="form-group checkbox">
+                    <input type="checkbox" id="showKeyValues" checked>
+                    <label for="showKeyValues">Show Key-Value Pairs</label>
+                </div>
+                <div class="form-group checkbox">
+                    <input type="checkbox" id="showReplicas" checked>
+                    <label for="showReplicas">Show Replicas</label>
+                </div>
+                <div class="form-group checkbox">
+                    <input type="checkbox" id="showRoutingPaths" checked>
+                    <label for="showRoutingPaths">Show Routing Paths</label>
+                </div>
+                <div class="form-group checkbox">
+                    <input type="checkbox" id="showZoneBoundaries" checked>
+                    <label for="showZoneBoundaries">Show Zone Boundaries</label>
+                </div>
+                <div class="form-group checkbox">
+                    <input type="checkbox" id="showLoadHeatmap">
+                    <label for="showLoadHeatmap">Show Load Heatmap</label>
+                </div>
+            </div>
+            
+            <div class="panel">
+                <h2>Network Controls</h2>
+                <div class="control-group">
+                    <button id="simulateLoad">Simulate Load</button>
+                    <button id="balanceLoad">Balance Load</button>
+                    <button id="resetNetwork">Reset Network</button>
+                </div>
+            </div>
+        </div>
+        
+        <div class="visualization-container">
+            <div id="visualization"></div>
+            
+            <div class="data-panel">
+                <h3>Data Panel</h3>
+                <div id="data-info">
+                    <p>Select a node or data point to see details</p>
+                </div>
+            </div>
+            
+            <div class="routing-panel">
+                <h3>Operation Log</h3>
+                <div id="operation-log"></div>
+            </div>
         </div>
     </div>
-
-    <div id="visualization"></div>
-
-    <script src="/static/js/visualizer.js"></script>
+    
+    <div id="tooltip" class="tooltip"></div>
+    
+    <script>
+        // WebSocket setup
+        let socket = null;
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            socket = new WebSocket(wsUrl);
+            
+            socket.onopen = function() {
+                console.log('WebSocket connection established');
+                addLogEntry('Connected to server via WebSocket');
+            };
+            
+            socket.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                
+                // Check if this is a network state update
+                if (data.nodes !== undefined) {
+                    updateVisualization(data);
+                } else if (data.type !== undefined) {
+                    // This is an event
+                    handleEvent(data);
+                }
+            };
+            
+            socket.onclose = function() {
+                console.log('WebSocket connection closed');
+                // Try to reconnect after 5 seconds
+                setTimeout(connectWebSocket, 5000);
+            };
+            
+            socket.onerror = function(error) {
+                console.error('WebSocket error:', error);
+            };
+        }
+        
+        function handleEvent(event) {
+            const { type, timestamp, payload } = event;
+            
+            switch (type) {
+                case 'node_failure':
+                    addLogEntry(`Node ${payload.nodeId} failed at ${formatTime(new Date(payload.time))}`);
+                    break;
+                case 'node_recovery':
+                    addLogEntry(`Node ${payload.nodeId} recovered at ${formatTime(new Date(payload.time))}`);
+                    break;
+                case 'node_added':
+                    addLogEntry(`Node ${payload.nodeId} added at position (${payload.x.toFixed(2)}, ${payload.y.toFixed(2)})`);
+                    break;
+                case 'node_removed':
+                    addLogEntry(`Node ${payload.nodeId} removed from the network`);
+                    break;
+                case 'load_balancing':
+                    addLogEntry(`Load balancing performed with ${payload.adjustments.length} adjustments`);
+                    break;
+                case 'load_simulation':
+                    addLogEntry(`Load simulation triggered at ${formatTime(new Date(payload.time))}`);
+                    break;
+                default:
+                    addLogEntry(`Received event: ${type}`);
+            }
+        }
+        
+        function formatTime(date) {
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+        
+        function addLogEntry(message) {
+            const log = document.getElementById('operation-log');
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            entry.innerHTML = `<span class="log-time">${formatTime(new Date())}</span> ${message}`;
+            log.insertBefore(entry, log.firstChild);
+            
+            // Limit log entries
+            if (log.children.length > 50) {
+                log.removeChild(log.lastChild);
+            }
+        }
+        
+        // D3.js visualization setup
+        const width = 800;
+        const height = 600;
+        const svg = d3.select('#visualization')
+            .append('svg')
+            .attr('width', width)
+            .attr('height', height);
+            
+        // Add coordinate space
+        svg.append('rect')
+            .attr('class', 'coordinate-space')
+            .attr('x', 0)
+            .attr('y', 0)
+            .attr('width', width)
+            .attr('height', height)
+            .attr('fill', '#f8f9fa')
+            .attr('stroke', '#dee2e6');
+            
+        // Add container for nodes
+        const nodesGroup = svg.append('g').attr('class', 'nodes');
+        
+        // Add container for zones
+        const zonesGroup = svg.append('g').attr('class', 'zones');
+        
+        // Add container for data points
+        const dataGroup = svg.append('g').attr('class', 'data-points');
+        
+        // Add container for routing paths
+        const routingGroup = svg.append('g').attr('class', 'routing-paths');
+        
+        // Add legend
+        const legend = svg.append('g')
+            .attr('class', 'legend')
+            .attr('transform', `translate(20, ${height - 140})`);
+            
+        const legendItems = [
+            { label: 'Active Node', color: '#28a745' },
+            { label: 'Failed Node', color: '#dc3545' },
+            { label: 'High Load', color: '#fd7e14' },
+            { label: 'Data Point', color: '#007bff' },
+            { label: 'Replica', color: '#6f42c1' },
+            { label: 'Routing Path', color: '#20c997' }
+        ];
+        
+        legendItems.forEach((item, i) => {
+            const g = legend.append('g')
+                .attr('transform', `translate(0, ${i * 20})`);
+                
+            g.append('rect')
+                .attr('width', 15)
+                .attr('height', 15)
+                .attr('fill', item.color);
+                
+            g.append('text')
+                .attr('x', 20)
+                .attr('y', 12)
+                .text(item.label)
+                .attr('fill', '#212529');
+        });
+        
+        // Scales for mapping coordinates
+        const xScale = d3.scaleLinear()
+            .domain([0, 1])
+            .range([0, width]);
+            
+        const yScale = d3.scaleLinear()
+            .domain([0, 1])
+            .range([0, height]);
+            
+        // Color scale for heatmap
+        const colorScale = d3.scaleSequential(d3.interpolateYlOrRd)
+            .domain([0, 1]);
+            
+        // Initialize tooltip
+        const tooltip = d3.select('#tooltip');
+        
+        // Function to update the visualization with network state
+        function updateVisualization(data) {
+            // Update zones
+            const zones = zonesGroup.selectAll('.zone')
+                .data(data.nodes, d => d.id);
+                
+            zones.exit().remove();
+            
+            const zonesEnter = zones.enter()
+                .append('rect')
+                .attr('class', 'zone')
+                .attr('stroke', '#6c757d')
+                .attr('stroke-width', 1)
+                .attr('fill-opacity', 0.1);
+                
+            zones.merge(zonesEnter)
+                .attr('x', d => xScale(d.zone[0]))
+                .attr('y', d => yScale(d.zone[1]))
+                .attr('width', d => xScale(d.zone[2]) - xScale(d.zone[0]))
+                .attr('height', d => yScale(d.zone[3]) - yScale(d.zone[1]))
+                .attr('fill', d => d.highLoad ? '#fd7e14' : '#6c757d')
+                .style('display', d => document.getElementById('showZoneBoundaries').checked ? 'block' : 'none');
+                
+            // Update nodes
+            const nodes = nodesGroup.selectAll('.node')
+                .data(data.nodes, d => d.id);
+                
+            nodes.exit().remove();
+            
+            const nodesEnter = nodes.enter()
+                .append('circle')
+                .attr('class', 'node')
+                .attr('r', 12)
+                .on('mouseover', function(event, d) {
+                    tooltip.style('display', 'block')
+                        .html(`<strong>Node ${d.id}</strong><br>
+                               Load: ${(d.load * 100).toFixed(1)}%<br>
+                               Status: ${d.failed ? 'Failed' : 'Active'}<br>
+                               ${d.highLoad ? '<span class="warning">High Load</span>' : ''}`)
+                        .style('left', (event.pageX + 10) + 'px')
+                        .style('top', (event.pageY - 20) + 'px');
+                })
+                .on('mouseout', function() {
+                    tooltip.style('display', 'none');
+                })
+                .on('click', function(event, d) {
+                    showDataInfo(d);
+                });
+                
+            nodes.merge(nodesEnter)
+                .attr('cx', d => xScale((d.zone[0] + d.zone[2]) / 2))
+                .attr('cy', d => yScale((d.zone[1] + d.zone[3]) / 2))
+                .attr('fill', d => {
+                    if (d.failed) return '#dc3545';
+                    if (d.highLoad) return '#fd7e14';
+                    return '#28a745';
+                })
+                .attr('stroke', '#212529')
+                .attr('stroke-width', 2);
+                
+            // Add node labels
+            const labels = nodesGroup.selectAll('.node-label')
+                .data(data.nodes, d => d.id);
+                
+            labels.exit().remove();
+            
+            const labelsEnter = labels.enter()
+                .append('text')
+                .attr('class', 'node-label')
+                .attr('text-anchor', 'middle')
+                .attr('fill', '#212529')
+                .attr('font-size', '10px');
+                
+            labels.merge(labelsEnter)
+                .attr('x', d => xScale((d.zone[0] + d.zone[2]) / 2))
+                .attr('y', d => yScale((d.zone[1] + d.zone[3]) / 2) + 4)
+                .text(d => d.id);
+                
+            // Update data points if showing
+            if (document.getElementById('showKeyValues').checked) {
+                const dataPoints = dataGroup.selectAll('.data-point')
+                    .data(data.data, d => d.key);
+                    
+                dataPoints.exit().remove();
+                
+                const dataPointsEnter = dataPoints.enter()
+                    .append('circle')
+                    .attr('class', 'data-point')
+                    .attr('r', 6)
+                    .on('mouseover', function(event, d) {
+                        tooltip.style('display', 'block')
+                            .html(`<strong>Key:</strong> ${d.key}<br>
+                                   <strong>Value:</strong> ${d.value}<br>
+                                   <strong>Node:</strong> ${d.nodeId}<br>
+                                   <strong>Type:</strong> ${d.isReplica ? 'Replica' : 'Primary'}`)
+                            .style('left', (event.pageX + 10) + 'px')
+                            .style('top', (event.pageY - 20) + 'px');
+                    })
+                    .on('mouseout', function() {
+                        tooltip.style('display', 'none');
+                    })
+                    .on('click', function(event, d) {
+                        showDataPointInfo(d);
+                    });
+                    
+                dataPoints.merge(dataPointsEnter)
+                    .attr('cx', d => {
+                        // Find the node
+                        const node = data.nodes.find(n => n.id === d.nodeId);
+                        if (!node) return 0;
+                        // Position within the node's zone
+                        return xScale(Math.random() * 0.8 * (node.zone[2] - node.zone[0]) + node.zone[0] + 0.1 * (node.zone[2] - node.zone[0]));
+                    })
+                    .attr('cy', d => {
+                        // Find the node
+                        const node = data.nodes.find(n => n.id === d.nodeId);
+                        if (!node) return 0;
+                        // Position within the node's zone
+                        return yScale(Math.random() * 0.8 * (node.zone[3] - node.zone[1]) + node.zone[1] + 0.1 * (node.zone[3] - node.zone[1]));
+                    })
+                    .attr('fill', d => d.isReplica ? '#6f42c1' : '#007bff')
+                    .style('display', d => {
+                        if (d.isReplica && !document.getElementById('showReplicas').checked) {
+                            return 'none';
+                        }
+                        return 'block';
+                    });
+            } else {
+                dataGroup.selectAll('.data-point').remove();
+            }
+            
+            // Update load heatmap if enabled
+            if (document.getElementById('showLoadHeatmap').checked) {
+                // Create gradient for each node zone
+                data.nodes.forEach(node => {
+                    const gradientId = `load-gradient-${node.id}`;
+                    
+                    // Check if gradient already exists
+                    let gradient = svg.select(`#${gradientId}`);
+                    if (gradient.empty()) {
+                        gradient = svg.append('defs')
+                            .append('linearGradient')
+                            .attr('id', gradientId)
+                            .attr('x1', '0%')
+                            .attr('y1', '0%')
+                            .attr('x2', '100%')
+                            .attr('y2', '100%');
+                            
+                        gradient.append('stop')
+                            .attr('offset', '0%')
+                            .attr('stop-color', colorScale(0))
+                            .attr('stop-opacity', 0.7);
+                            
+                        gradient.append('stop')
+                            .attr('offset', '100%')
+                            .attr('stop-color', colorScale(node.load))
+                            .attr('stop-opacity', 0.7);
+                    } else {
+                        gradient.select('stop:nth-child(2)')
+                            .attr('stop-color', colorScale(node.load));
+                    }
+                    
+                    // Add or update heatmap rectangle
+                    let heatmap = zonesGroup.select(`.heatmap-${node.id}`);
+                    if (heatmap.empty()) {
+                        heatmap = zonesGroup.append('rect')
+                            .attr('class', `heatmap heatmap-${node.id}`);
+                    }
+                    
+                    heatmap
+                        .attr('x', xScale(node.zone[0]))
+                        .attr('y', yScale(node.zone[1]))
+                        .attr('width', xScale(node.zone[2]) - xScale(node.zone[0]))
+                        .attr('height', yScale(node.zone[3]) - yScale(node.zone[1]))
+                        .attr('fill', `url(#${gradientId})`)
+                        .attr('stroke', 'none');
+                });
+            } else {
+                zonesGroup.selectAll('.heatmap').remove();
+            }
+            
+            // Update routing paths if enabled
+            if (document.getElementById('showRoutingPaths').checked) {
+                // Implement routing path visualization
+                // This would depend on having routing path data from the server
+            } else {
+                routingGroup.selectAll('.routing-path').remove();
+            }
+        }
+        
+        function showDataInfo(node) {
+            const infoPanel = document.getElementById('data-info');
+            infoPanel.innerHTML = `
+                <h4>Node ${node.id}</h4>
+                <p><strong>Status:</strong> ${node.failed ? 'Failed' : 'Active'}</p>
+                <p><strong>Load:</strong> ${(node.load * 100).toFixed(1)}%</p>
+                <p><strong>Zone:</strong> [${node.zone.map(v => v.toFixed(2)).join(', ')}]</p>
+                <p><strong>Replicas:</strong> ${node.replicas.length ? node.replicas.join(', ') : 'None'}</p>
+                ${node.failed ? `<p><strong>Failure Time:</strong> ${new Date(node.failureTime).toLocaleString()}</p>` : ''}
+                ${node.failed ? `<p><strong>Recovery Progress:</strong> ${(node.recoveryProgress * 100).toFixed(0)}%</p>` : ''}
+            `;
+        }
+        
+        function showDataPointInfo(dataPoint) {
+            const infoPanel = document.getElementById('data-info');
+            infoPanel.innerHTML = `
+                <h4>Data Point</h4>
+                <p><strong>Key:</strong> ${dataPoint.key}</p>
+                <p><strong>Value:</strong> ${dataPoint.value}</p>
+                <p><strong>Node:</strong> ${dataPoint.nodeId}</p>
+                <p><strong>Type:</strong> ${dataPoint.isReplica ? 'Replica' : 'Primary'}</p>
+                <p><strong>Created:</strong> ${new Date(dataPoint.created).toLocaleString()}</p>
+                <p><strong>Access Count:</strong> ${dataPoint.accessCount}</p>
+            `;
+        }
+        
+        // Event listeners for controls
+        document.getElementById('showKeyValues').addEventListener('change', fetchNetworkState);
+        document.getElementById('showReplicas').addEventListener('change', fetchNetworkState);
+        document.getElementById('showRoutingPaths').addEventListener('change', fetchNetworkState);
+        document.getElementById('showZoneBoundaries').addEventListener('change', fetchNetworkState);
+        document.getElementById('showLoadHeatmap').addEventListener('change', fetchNetworkState);
+        
+        document.getElementById('simulateLoad').addEventListener('click', function() {
+            fetch('/api/simulate-load', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    addLogEntry('Simulated varying load on nodes');
+                    fetchNetworkState();
+                })
+                .catch(error => console.error('Error simulating load:', error));
+        });
+        
+        document.getElementById('balanceLoad').addEventListener('click', function() {
+            fetch('/api/loadbalance', { method: 'POST' })
+                .then(response => response.json())
+                .then(data => {
+                    addLogEntry(`Load balancing performed with ${data.adjustments.length} adjustments`);
+                    fetchNetworkState();
+                })
+                .catch(error => console.error('Error balancing load:', error));
+        });
+        
+        document.getElementById('addNode').addEventListener('click', function() {
+            const x = Math.random() * 0.8;
+            const y = Math.random() * 0.8;
+            
+            fetch('/api/nodes/add', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({ x, y })
+            })
+                .then(response => response.json())
+                .then(data => {
+                    addLogEntry(`Added new node ${data.nodeId}`);
+                    fetchNetworkState();
+                })
+                .catch(error => console.error('Error adding node:', error));
+        });
+        
+        let selectedNode = null;
+        
+        // Function to fetch network state
+        function fetchNetworkState() {
+            fetch('/api/state')
+                .then(response => response.json())
+                .then(data => updateVisualization(data))
+                .catch(error => console.error('Error fetching network state:', error));
+        }
+        
+        // Initialize
+        connectWebSocket();
+        fetchNetworkState();
+        
+        // Fetch state periodically as fallback if WebSocket fails
+        setInterval(fetchNetworkState, 5000);
+    </script>
 </body>
 </html> 
