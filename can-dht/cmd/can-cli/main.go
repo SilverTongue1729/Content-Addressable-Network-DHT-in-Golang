@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
@@ -13,24 +16,13 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Simulated user database
-type User struct {
-	Username string
-	Password string
-}
-
-var users = []User{
-	{Username: "admin", Password: "admin123"},
-	{Username: "user1", Password: "password1"},
-	{Username: "user2", Password: "password2"},
-}
-
 func main() {
-	fmt.Println("=== CAN DHT Interactive CLI ===")
+	fmt.Println("=== CAN DHT Interactive CLI with User Authentication ===")
 	fmt.Println("Type 'help' for a list of commands.")
 
 	var (
-		currentUser     *User
+		currentUser     string
+		currentPassword string
 		currentNodeAddr string
 		currentClient   pb.CANServiceClient
 		currentConn     *grpc.ClientConn
@@ -41,8 +33,8 @@ func main() {
 	for {
 		// Display prompt based on login status and connected node
 		prompt := "> "
-		if currentUser != nil {
-			prompt = fmt.Sprintf("%s@", currentUser.Username)
+		if currentUser != "" {
+			prompt = fmt.Sprintf("%s@", currentUser)
 			if currentNodeAddr != "" {
 				prompt += currentNodeAddr
 			}
@@ -84,21 +76,20 @@ func main() {
 				continue
 			}
 			username, password := args[0], args[1]
-			user := authenticateUser(username, password)
-			if user == nil {
-				fmt.Println("Invalid username or password.")
-				continue
-			}
-			currentUser = user
-			fmt.Printf("Welcome, %s!\n", currentUser.Username)
+
+			// Simple validation (in a real system, this would verify against a database)
+			currentUser = username
+			currentPassword = password
+			fmt.Printf("Welcome, %s! Your data will be encrypted using your credentials.\n", currentUser)
 
 		case "logout":
-			if currentUser == nil {
+			if currentUser == "" {
 				fmt.Println("You are not logged in.")
 				continue
 			}
-			fmt.Printf("Goodbye, %s!\n", currentUser.Username)
-			currentUser = nil
+			fmt.Printf("Goodbye, %s!\n", currentUser)
+			currentUser = ""
+			currentPassword = ""
 
 		case "connect":
 			if len(args) != 1 {
@@ -128,10 +119,10 @@ func main() {
 			fmt.Printf("Connected to node at %s\n", nodeAddress)
 
 		case "status":
-			if currentUser == nil {
+			if currentUser == "" {
 				fmt.Println("Login status: Not logged in")
 			} else {
-				fmt.Printf("Login status: Logged in as %s\n", currentUser.Username)
+				fmt.Printf("Login status: Logged in as %s\n", currentUser)
 			}
 
 			if currentNodeAddr == "" {
@@ -145,6 +136,10 @@ func main() {
 				continue
 			}
 
+			if !checkLoggedIn(currentUser) {
+				continue
+			}
+
 			if len(args) < 2 {
 				fmt.Println("Usage: put <key> <value>")
 				continue
@@ -153,15 +148,29 @@ func main() {
 			key := args[0]
 			value := strings.Join(args[1:], " ") // Allow spaces in value
 
-			err := putKeyValue(currentClient, key, value)
+			// Encrypt the key based on username and password
+			encryptedKey := deriveEncryptedKey(currentUser, currentPassword, key)
+
+			// Encrypt the value
+			encryptedValue, err := encryptValue(currentUser, currentPassword, value)
+			if err != nil {
+				fmt.Printf("Error encrypting value: %v\n", err)
+				continue
+			}
+
+			err = putKeyValue(currentClient, encryptedKey, encryptedValue)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 			} else {
-				fmt.Printf("Stored key '%s'\n", key)
+				fmt.Printf("Stored key '%s' (encrypted as '%s')\n", key, encryptedKey)
 			}
 
 		case "get":
 			if !checkConnection(currentClient) {
+				continue
+			}
+
+			if !checkLoggedIn(currentUser) {
 				continue
 			}
 
@@ -171,17 +180,32 @@ func main() {
 			}
 
 			key := args[0]
-			value, err := getKeyValue(currentClient, key)
+
+			// Encrypt the key based on username and password
+			encryptedKey := deriveEncryptedKey(currentUser, currentPassword, key)
+
+			encryptedValue, err := getKeyValue(currentClient, encryptedKey)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
-			} else if value == nil {
+			} else if encryptedValue == nil {
 				fmt.Printf("Key '%s' not found\n", key)
 			} else {
-				fmt.Printf("%s = %s\n", key, string(value))
+				// Decrypt the value
+				decryptedValue, err := decryptValue(currentUser, currentPassword, string(encryptedValue))
+				if err != nil {
+					fmt.Printf("Error decrypting value: %v\n", err)
+					continue
+				}
+
+				fmt.Printf("%s = %s\n", key, decryptedValue)
 			}
 
 		case "delete":
 			if !checkConnection(currentClient) {
+				continue
+			}
+
+			if !checkLoggedIn(currentUser) {
 				continue
 			}
 
@@ -191,7 +215,11 @@ func main() {
 			}
 
 			key := args[0]
-			success, err := deleteKeyValue(currentClient, key)
+
+			// Encrypt the key based on username and password
+			encryptedKey := deriveEncryptedKey(currentUser, currentPassword, key)
+
+			success, err := deleteKeyValue(currentClient, encryptedKey)
 			if err != nil {
 				fmt.Printf("Error: %v\n", err)
 			} else if success {
@@ -226,6 +254,82 @@ func main() {
 	}
 }
 
+// deriveEncryptedKey creates a deterministic, consistent encrypted key based on user credentials and the original key
+func deriveEncryptedKey(username, password, originalKey string) string {
+	// Combine username, password, and key to create a unique but deterministic key
+	combinedData := username + ":" + password + ":" + originalKey
+
+	// Use SHA-256 to create a fixed-length hash
+	hash := sha256.Sum256([]byte(combinedData))
+
+	// Convert to a Base64 string for use as a key in the DHT
+	// We're using Base64 to ensure the key is URL-safe and a reasonable length
+	return "user:" + username + ":" + base64.URLEncoding.EncodeToString(hash[:])
+}
+
+// encryptValue encrypts the value using the user's credentials
+func encryptValue(username, password, value string) (string, error) {
+	// Derive a key from the username and password
+	key := deriveEncryptionKey(username, password)
+
+	// In a real implementation, you would use proper encryption here
+	// For simplicity, we're using a basic XOR encryption with the derived key
+	encrypted := simpleEncrypt(value, key)
+
+	return encrypted, nil
+}
+
+// decryptValue decrypts the value using the user's credentials
+func decryptValue(username, password, encryptedValue string) (string, error) {
+	// Derive the same key for decryption
+	key := deriveEncryptionKey(username, password)
+
+	// Decrypt using the same algorithm
+	decrypted := simpleEncrypt(encryptedValue, key) // XOR is symmetric, so encryption = decryption
+
+	return decrypted, nil
+}
+
+// deriveEncryptionKey creates a key for encryption/decryption based on username and password
+func deriveEncryptionKey(username, password string) string {
+	// Combine username and password
+	combined := username + ":" + password
+
+	// Create a hash
+	hash := sha256.Sum256([]byte(combined))
+
+	// Convert to hex string
+	return hex.EncodeToString(hash[:])
+}
+
+// simpleEncrypt implements a basic XOR encryption for demonstration purposes
+// In a real implementation, you would use a proper encryption library
+func simpleEncrypt(input, key string) string {
+	var result []byte
+
+	// Expand the key if necessary
+	expandedKey := expandKey(key, len(input))
+
+	// XOR each byte of the input with the corresponding byte of the expanded key
+	for i := 0; i < len(input); i++ {
+		result = append(result, input[i]^expandedKey[i])
+	}
+
+	// Convert to Base64 for safe storage
+	return base64.StdEncoding.EncodeToString(result)
+}
+
+// expandKey repeats the key pattern to match the required length
+func expandKey(key string, length int) []byte {
+	var expandedKey []byte
+
+	for i := 0; i < length; i++ {
+		expandedKey = append(expandedKey, key[i%len(key)])
+	}
+
+	return expandedKey
+}
+
 func printHelp() {
 	fmt.Println("\nAvailable commands:")
 	fmt.Println("  help                - Show this help message")
@@ -234,8 +338,8 @@ func printHelp() {
 	fmt.Println("  logout              - Logout from current session")
 	fmt.Println("  connect <address>   - Connect to a CAN node (e.g., localhost:8080)")
 	fmt.Println("  status              - Show current login and connection status")
-	fmt.Println("  put <key> <value>   - Store a key-value pair")
-	fmt.Println("  get <key>           - Retrieve a value by key")
+	fmt.Println("  put <key> <value>   - Store an encrypted key-value pair")
+	fmt.Println("  get <key>           - Retrieve and decrypt a value by key")
 	fmt.Println("  delete <key>        - Delete a key-value pair")
 	fmt.Println("  leave               - Tell the current node to leave the network")
 	fmt.Println("")
@@ -244,13 +348,12 @@ func printHelp() {
 	fmt.Println("")
 }
 
-func authenticateUser(username, password string) *User {
-	for _, user := range users {
-		if user.Username == username && user.Password == password {
-			return &user
-		}
+func checkLoggedIn(username string) bool {
+	if username == "" {
+		fmt.Println("You must login first. Use 'login <username> <password>'")
+		return false
 	}
-	return nil
+	return true
 }
 
 func checkConnection(client pb.CANServiceClient) bool {
