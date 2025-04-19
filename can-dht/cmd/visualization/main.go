@@ -23,6 +23,7 @@ type SimulationState struct {
 	RoutingPaths      []RoutingPath
 	NodeJoinPoints    map[string]node.Point // Store join points by node ID
 	ReplicationFactor int                   // Number of replicas to maintain
+	FailedNodes       map[node.NodeID]bool  // Track which nodes have failed
 	mu                sync.RWMutex
 }
 
@@ -67,6 +68,7 @@ var simulation = &SimulationState{
 	RoutingPaths:      make([]RoutingPath, 0),
 	NodeJoinPoints:    make(map[string]node.Point), // Store join points by node ID
 	ReplicationFactor: 1,                           // Default: no replication, just primary copy
+	FailedNodes:       make(map[node.NodeID]bool),  // Track failed nodes
 }
 
 // Colors for key-value pairs
@@ -82,12 +84,12 @@ func main() {
 	// Create Gin router
 	r := gin.Default()
 
-	// Configure CORS
+	// Configure CORS with more permissive settings
 	r.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
-		ExposeHeaders:    []string{"Content-Length"},
+		AllowMethods:     []string{"GET", "POST", "DELETE", "PUT", "PATCH", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept", "Authorization"},
+		ExposeHeaders:    []string{"Content-Length", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           12 * time.Hour,
 	}))
@@ -105,9 +107,14 @@ func main() {
 		api.POST("/kv/put", putKeyValue)
 		api.GET("/kv/get/:key", getKeyValue)
 		api.DELETE("/kv/delete/:key", deleteKeyValue)
+
+		// Simple reset endpoint
 		api.POST("/reset", resetSimulation)
+
 		api.POST("/replication/factor", setReplicationFactor)
 		api.POST("/replication/replicate", replicateKey)
+		api.POST("/node/fail/:id", failNode)
+		api.POST("/node/recover/:id", recoverNode)
 	}
 
 	// Start the server
@@ -125,6 +132,7 @@ func initSimulation() {
 	simulation.KeyValuePairs = make(map[string]KeyValueInfo)
 	simulation.RoutingPaths = make([]RoutingPath, 0)
 	simulation.NodeJoinPoints = make(map[string]node.Point) // Clear join points too
+	simulation.FailedNodes = make(map[node.NodeID]bool)     // Clear failed nodes
 
 	// Create the coordinate space for the root node
 	minPoint := node.Point{0.0, 0.0}
@@ -134,6 +142,8 @@ func initSimulation() {
 	// Create the root node
 	rootNode := node.NewNode("root", "localhost:9000", zone, 2)
 	simulation.Nodes[rootNode.ID] = rootNode
+
+	fmt.Printf("Simulation initialized with root node\n")
 }
 
 // getSimulationState returns the current state of the simulation
@@ -189,6 +199,7 @@ func getSimulationState(c *gin.Context) {
 		Address   string     `json:"address"`
 		Zone      *node.Zone `json:"zone"`
 		Neighbors []string   `json:"neighbors"`
+		Failed    bool       `json:"failed"` // Add failed status
 	}
 
 	type ResponseData struct {
@@ -196,76 +207,63 @@ func getSimulationState(c *gin.Context) {
 		KeyValuePairs     []KVResponse  `json:"keyValuePairs"`
 		RoutingPaths      []RoutingPath `json:"routingPaths"`
 		ReplicationFactor int           `json:"replicationFactor"`
+		FailedNodes       []string      `json:"failedNodes"` // Add list of failed nodes
 	}
 
+	// Prepare response
 	response := ResponseData{
 		Nodes:             make([]NodeData, 0, len(simulation.Nodes)),
 		KeyValuePairs:     make([]KVResponse, 0, len(simulation.KeyValuePairs)),
-		RoutingPaths:      make([]RoutingPath, 0),
+		RoutingPaths:      simulation.RoutingPaths,
 		ReplicationFactor: simulation.ReplicationFactor,
+		FailedNodes:       make([]string, 0, len(simulation.FailedNodes)),
 	}
 
-	// Convert nodes to response format
+	// Prepare nodes data
 	for id, n := range simulation.Nodes {
+		// Get neighbors as strings (for JSON)
 		neighborIDs := make([]string, 0, len(n.Neighbors))
 		for nID := range n.Neighbors {
 			neighborIDs = append(neighborIDs, string(nID))
 		}
 
+		// Add the node to the response
 		response.Nodes = append(response.Nodes, NodeData{
 			ID:        string(id),
 			Address:   n.Address,
 			Zone:      n.Zone,
 			Neighbors: neighborIDs,
+			Failed:    simulation.FailedNodes[id], // Set failed status
 		})
 	}
 
-	// Add key-value pairs with explicitly mapped fields
-	// IMPORTANT: Include ALL key-value pairs, both primaries and replicas
-	for key, kv := range simulation.KeyValuePairs {
-		// Convert ReplicaNodes to string slice for JSON
-		replicaNodeStrings := make([]string, 0, len(kv.ReplicaNodes))
-		for _, nodeID := range kv.ReplicaNodes {
-			replicaNodeStrings = append(replicaNodeStrings, string(nodeID))
+	// Add failed nodes list
+	for id := range simulation.FailedNodes {
+		response.FailedNodes = append(response.FailedNodes, string(id))
+	}
+
+	// Prepare key-value pairs data
+	for _, kv := range simulation.KeyValuePairs {
+		// Convert NodeID slices to string slices for JSON
+		replicaNodes := make([]string, len(kv.ReplicaNodes))
+		for i, id := range kv.ReplicaNodes {
+			replicaNodes[i] = string(id)
 		}
 
-		// Create response object for this key-value pair
-		kvResponse := KVResponse{
+		// Add the key-value pair to the response
+		response.KeyValuePairs = append(response.KeyValuePairs, KVResponse{
 			Key:           kv.Key,
 			Value:         kv.Value,
 			Point:         kv.Point,
 			NodeID:        kv.NodeID,
 			Color:         kv.Color,
 			Encrypted:     kv.Encrypted,
-			ReplicaNodes:  replicaNodeStrings,
+			ReplicaNodes:  replicaNodes,
 			IsPrimaryCopy: kv.IsPrimaryCopy,
-		}
-
-		// Add to response
-		response.KeyValuePairs = append(response.KeyValuePairs, kvResponse)
-
-		// Debug log this entry
-		typeStr := "replica"
-		if kv.IsPrimaryCopy {
-			typeStr = "primary"
-		}
-		fmt.Printf("Added %s key '%s' to response (map key: '%s')\n", typeStr, kv.Key, key)
+		})
 	}
 
-	// Add active routing paths
-	for _, path := range simulation.RoutingPaths {
-		if path.Active {
-			response.RoutingPaths = append(response.RoutingPaths, path)
-		}
-	}
-
-	// Final summary
-	fmt.Printf("Sending %d key-value pairs to client (%d primary, %d replicas)\n",
-		len(response.KeyValuePairs),
-		countPrimaryKeys(response.KeyValuePairs),
-		len(response.KeyValuePairs)-countPrimaryKeys(response.KeyValuePairs))
-	fmt.Printf("========== END SIMULATION STATE REQUEST ==========\n\n")
-
+	// Return the response
 	c.JSON(http.StatusOK, response)
 }
 
@@ -639,21 +637,121 @@ func getKeyValue(c *gin.Context) {
 	simulation.mu.RLock()
 	defer simulation.mu.RUnlock()
 
+	// Debug: Print all entries for the specified key
+	fmt.Printf("\n===== GET KEY REQUEST FOR '%s' =====\n", key)
+
+	// Find the primary entry for the key
 	kvInfo, exists := simulation.KeyValuePairs[key]
 	if !exists {
+		fmt.Printf("Key %s not found\n", key)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Key not found"})
 		return
 	}
+
+	fmt.Printf("Found primary entry: NodeID=%s, IsFailed=%v\n",
+		kvInfo.NodeID, simulation.FailedNodes[kvInfo.NodeID])
+
+	// First check: is the primary node failed?
+	if simulation.FailedNodes[kvInfo.NodeID] {
+		fmt.Printf("Node %s holding key %s has failed\n", kvInfo.NodeID, key)
+
+		// Check for proper replicas (those listed in ReplicaNodes)
+		fmt.Printf("Key has %d explicit replicas\n", len(kvInfo.ReplicaNodes))
+
+		if len(kvInfo.ReplicaNodes) == 0 {
+			// No replicas configured for this key
+			errorMsg := fmt.Sprintf("Key %s is unavailable - node %s has failed and no replicas were created", key, kvInfo.NodeID)
+			fmt.Println(errorMsg)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errorMsg})
+			return
+		}
+
+		// Try to find a healthy explicit replica
+		foundHealthyReplica := false
+		var replicaNodeID node.NodeID
+		var replicaValue string
+		var replicaMapKey string
+
+		// Check all explicit replicas
+		for _, nodeID := range kvInfo.ReplicaNodes {
+			if !simulation.FailedNodes[nodeID] {
+				// Found a healthy replica node
+				foundHealthyReplica = true
+				replicaNodeID = nodeID
+
+				// Find the replica in the KV store
+				for mapKey, replicaInfo := range simulation.KeyValuePairs {
+					if replicaInfo.Key == key && !replicaInfo.IsPrimaryCopy && replicaInfo.NodeID == nodeID {
+						replicaValue = replicaInfo.Value
+						replicaMapKey = mapKey
+						fmt.Printf("Found explicit replica on healthy node %s (mapKey: %s)\n",
+							nodeID, mapKey)
+						break
+					}
+				}
+
+				// If we found the node ID but not the actual replica in the KV map
+				// get the value from the node's data directly
+				if replicaValue == "" && simulation.Nodes[nodeID] != nil {
+					replicaValue = simulation.Nodes[nodeID].Data[key]
+					fmt.Printf("Got replica value directly from node %s\n", nodeID)
+				}
+
+				break
+			} else {
+				fmt.Printf("Replica node %s is also failed\n", nodeID)
+			}
+		}
+
+		if !foundHealthyReplica {
+			// No healthy replica found among the explicit replicas
+			errorMsg := fmt.Sprintf("Key %s is unavailable - node %s has failed and all replicas are also on failed nodes", key, kvInfo.NodeID)
+			fmt.Println(errorMsg)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errorMsg})
+			return
+		}
+
+		// Required but replica value is missing (shouldn't happen)
+		if replicaValue == "" {
+			errorMsg := fmt.Sprintf("Key %s is unavailable - replica found on node %s but value is missing", key, replicaNodeID)
+			fmt.Println(errorMsg)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": errorMsg})
+			return
+		}
+
+		// Use the replica instead
+		// Simulate routing to the replica node
+		path := simulateRouting("GET", key, replicaNodeID)
+
+		fmt.Printf("Returning value from replica on node %s\n", replicaNodeID)
+		fmt.Printf("===== END GET KEY REQUEST =====\n\n")
+
+		c.JSON(http.StatusOK, gin.H{
+			"key":         key,
+			"value":       replicaValue,
+			"node":        string(replicaNodeID),
+			"path":        path,
+			"encrypted":   kvInfo.Encrypted,
+			"fromReplica": true,
+			"replicaKey":  replicaMapKey,
+		})
+		return
+	}
+
+	// The primary node is healthy, proceed normally
+	fmt.Printf("Node %s is healthy, proceeding normally\n", kvInfo.NodeID)
+	fmt.Printf("===== END GET KEY REQUEST =====\n\n")
 
 	// Simulate routing
 	path := simulateRouting("GET", key, kvInfo.NodeID)
 
 	c.JSON(http.StatusOK, gin.H{
-		"key":       key,
-		"value":     kvInfo.Value,
-		"node":      string(kvInfo.NodeID),
-		"path":      path,
-		"encrypted": kvInfo.Encrypted,
+		"key":         key,
+		"value":       kvInfo.Value,
+		"node":        string(kvInfo.NodeID),
+		"path":        path,
+		"encrypted":   kvInfo.Encrypted,
+		"fromReplica": false,
 	})
 }
 
@@ -661,107 +759,140 @@ func getKeyValue(c *gin.Context) {
 func deleteKeyValue(c *gin.Context) {
 	key := c.Param("key")
 
-	fmt.Printf("\n========== DELETE OPERATION ==========\n")
-	fmt.Printf("Deleting key: '%s'\n", key)
-	fmt.Printf("Current state: %d nodes, %d key-value pairs\n",
-		len(simulation.Nodes), len(simulation.KeyValuePairs))
-
 	simulation.mu.Lock()
 	defer simulation.mu.Unlock()
 
-	// First, find the primary copy of the key
-	var primaryKV KeyValueInfo
-	var primaryExists bool
-	var originalKey string
+	fmt.Printf("\n===== DELETE KEY REQUEST FOR '%s' =====\n", key)
 
-	// Check if the provided key is directly a primary key
-	if kv, exists := simulation.KeyValuePairs[key]; exists && kv.IsPrimaryCopy {
-		primaryKV = kv
-		primaryExists = true
-		originalKey = key
-		fmt.Printf("Found primary key at '%s'\n", key)
-	} else {
-		// The provided key might be a replica key ID or the logical key name of a replica
-		// We need to find the primary copy by checking all keys
-		for k, kv := range simulation.KeyValuePairs {
-			if kv.IsPrimaryCopy && (kv.Key == key || k == key) {
-				primaryKV = kv
-				primaryExists = true
-				originalKey = k
-				fmt.Printf("Found primary key at '%s' for key name '%s'\n", k, key)
-				break
-			}
-		}
-	}
-
-	if !primaryExists {
-		errorMsg := fmt.Sprintf("Key '%s' not found (neither as primary nor referenced by replica)", key)
-		fmt.Printf("ERROR: %s\n", errorMsg)
-		fmt.Printf("========== END DELETE OPERATION (FAILED) ==========\n\n")
+	// Find the primary key entry
+	kvInfo, exists := simulation.KeyValuePairs[key]
+	if !exists {
+		fmt.Printf("Key %s not found\n", key)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Key not found"})
 		return
 	}
 
-	// Now we have the primary key, get its replica nodes list
-	replicaNodeIDs := primaryKV.ReplicaNodes
-	fmt.Printf("Primary key '%s' has %d replicas\n", originalKey, len(replicaNodeIDs))
+	fmt.Printf("Found primary entry: NodeID=%s, IsFailed=%v\n",
+		kvInfo.NodeID, simulation.FailedNodes[kvInfo.NodeID])
 
-	// Simulate routing to the primary node
-	path := simulateRouting("DELETE", originalKey, primaryKV.NodeID)
+	// Check if the primary node is failed
+	var sourceNodeID node.NodeID
+	if simulation.FailedNodes[kvInfo.NodeID] {
+		fmt.Printf("Primary node %s for key %s is failed\n", kvInfo.NodeID, key)
 
-	// Delete from the primary node
-	primaryNode := simulation.Nodes[primaryKV.NodeID]
+		// If primary node is failed, we can still delete through any replica
+		// This is so that users can clean up data even if the primary node is down
+		sourceNodeID = ""
+
+		// Try to find a healthy replica node to simulate the deletion path
+		for mapKey, replicaInfo := range simulation.KeyValuePairs {
+			if replicaInfo.Key == key && !replicaInfo.IsPrimaryCopy && !simulation.FailedNodes[replicaInfo.NodeID] {
+				sourceNodeID = replicaInfo.NodeID
+				fmt.Printf("Found healthy replica on node %s for routing deletion (mapKey: %s)\n",
+					sourceNodeID, mapKey)
+				break
+			}
+		}
+
+		if sourceNodeID == "" {
+			// No healthy replica found, but we'll still delete the data
+			// We'll use a random healthy node for the routing path
+			for nID, failed := range simulation.FailedNodes {
+				if !failed {
+					sourceNodeID = nID
+					break
+				}
+			}
+
+			if sourceNodeID == "" {
+				// All nodes are failed - this shouldn't happen in practice
+				fmt.Printf("WARNING: All nodes appear to be failed!\n")
+				// We'll use the primary node anyway for routing simulation
+				sourceNodeID = kvInfo.NodeID
+			}
+		}
+	} else {
+		// Primary node is healthy, use it as the source
+		sourceNodeID = kvInfo.NodeID
+	}
+
+	// Simulate routing
+	path := simulateRouting("DELETE", key, sourceNodeID)
+
+	// Delete from primary node if it's healthy
+	if !simulation.FailedNodes[kvInfo.NodeID] {
+	primaryNode := simulation.Nodes[kvInfo.NodeID]
 	if primaryNode != nil {
-		primaryNode.Delete(primaryKV.Key)
-		fmt.Printf("Deleted key '%s' from primary node %s\n", primaryKV.Key, primaryKV.NodeID)
+		primaryNode.Delete(key)
+			fmt.Printf("Deleted key %s from primary node %s\n", key, kvInfo.NodeID)
+		}
+	} else {
+		fmt.Printf("Primary node %s is failed, key %s will be deleted from state only\n",
+			kvInfo.NodeID, key)
 	}
 
-	// Delete from all replica nodes
-	for _, replicaNodeID := range replicaNodeIDs {
-		replicaNode := simulation.Nodes[replicaNodeID]
-		if replicaNode != nil {
-			replicaNode.Delete(primaryKV.Key)
-			fmt.Printf("Deleted key '%s' from replica node %s\n", primaryKV.Key, replicaNodeID)
+	// Delete all replicas
+	// First, find all replica entries to delete
+	keysToRemove := []string{key} // Start with the primary key
+	for mapKey, kv := range simulation.KeyValuePairs {
+		if kv.Key == key && !kv.IsPrimaryCopy {
+			// This is a replica of our target key
+			keysToRemove = append(keysToRemove, mapKey)
+
+			// Delete from the replica node if it's healthy
+			if !simulation.FailedNodes[kv.NodeID] {
+			if replicaNode := simulation.Nodes[kv.NodeID]; replicaNode != nil {
+				replicaNode.Delete(key)
+					fmt.Printf("Deleted key %s from replica node %s\n", key, kv.NodeID)
+				}
+			} else {
+				fmt.Printf("Replica node %s is failed, key %s replica will be deleted from state only\n",
+					kv.NodeID, key)
+			}
 		}
 	}
 
-	// Find and delete all entries in KeyValuePairs related to this key
-	keysToDelete := []string{}
-	for k, kv := range simulation.KeyValuePairs {
-		if kv.Key == primaryKV.Key {
-			keysToDelete = append(keysToDelete, k)
-		}
+	// Delete all entries from simulation state
+	for _, mapKey := range keysToRemove {
+		delete(simulation.KeyValuePairs, mapKey)
+		fmt.Printf("Removed key %s from simulation state\n", mapKey)
 	}
 
-	for _, k := range keysToDelete {
-		delete(simulation.KeyValuePairs, k)
-		fmt.Printf("Deleted entry '%s' from KeyValuePairs map\n", k)
-	}
-
-	fmt.Printf("Total of %d entries deleted\n", len(keysToDelete))
-	fmt.Printf("========== END DELETE OPERATION (SUCCESS) ==========\n\n")
+	fmt.Printf("===== END DELETE KEY REQUEST =====\n\n")
 
 	c.JSON(http.StatusOK, gin.H{
-		"key":           primaryKV.Key,
-		"node":          string(primaryKV.NodeID),
-		"path":          path,
-		"replicasCount": len(replicaNodeIDs),
-		"totalDeleted":  len(keysToDelete),
+		"key":  key,
+		"node": string(sourceNodeID),
+		"path": path,
 	})
 }
 
 // resetSimulation resets the simulation to its initial state
 func resetSimulation(c *gin.Context) {
+	// Acquire lock
 	simulation.mu.Lock()
 	defer simulation.mu.Unlock()
 
-	// Clear all routing paths explicitly before initializing
+	// Create new empty data structures instead of clearing existing ones
+	simulation.Nodes = make(map[node.NodeID]*node.Node)
+	simulation.KeyValuePairs = make(map[string]KeyValueInfo)
 	simulation.RoutingPaths = make([]RoutingPath, 0)
+	simulation.NodeJoinPoints = make(map[string]node.Point)
+	simulation.FailedNodes = make(map[node.NodeID]bool)
+	simulation.ReplicationFactor = 1 // Reset to default
 
-	// Initialize the simulation
-	initSimulation()
+	// Initialize with root node
+	minPoint := node.Point{0.0, 0.0}
+	maxPoint := node.Point{1.0, 1.0}
+	zone, _ := node.NewZone(minPoint, maxPoint)
+	rootNode := node.NewNode("root", "localhost:9000", zone, 2)
+	simulation.Nodes[rootNode.ID] = rootNode
 
-	c.JSON(http.StatusOK, gin.H{"message": "Simulation reset"})
+	// Simple success response
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"message": "Simulation reset successfully",
+	})
 }
 
 // updateNeighbors updates the neighbor relationships between nodes
@@ -940,20 +1071,27 @@ func min(a, b int) int {
 
 // simulateRouting simulates the routing process and returns the path
 func simulateRouting(requestType, key string, targetNodeID node.NodeID) []node.NodeID {
-	// Choose a random starting node
-	var nodes []node.NodeID
+	fmt.Printf("Simulating %s routing for key %s to target node %s\n", requestType, key, targetNodeID)
+
+	// Choose a random starting node that isn't failed
+	var availableNodes []node.NodeID
 	for id := range simulation.Nodes {
-		nodes = append(nodes, id)
+		if !simulation.FailedNodes[id] {
+			availableNodes = append(availableNodes, id)
+		}
 	}
 
-	if len(nodes) == 0 {
+	if len(availableNodes) == 0 {
+		fmt.Printf("No available nodes for routing (all failed)\n")
 		return []node.NodeID{}
 	}
 
-	startNodeID := nodes[rand.Intn(len(nodes))]
+	startNodeID := availableNodes[rand.Intn(len(availableNodes))]
+	fmt.Printf("Selected start node for routing: %s\n", startNodeID)
 
 	// If the start node is the target, just return it
 	if startNodeID == targetNodeID {
+		fmt.Printf("Start node is target node, no routing needed\n")
 		return []node.NodeID{startNodeID}
 	}
 
@@ -967,8 +1105,9 @@ func simulateRouting(requestType, key string, targetNodeID node.NodeID) []node.N
 	currentNodeID := startNodeID
 	for currentNodeID != targetNodeID {
 		currentNode := simulation.Nodes[currentNodeID]
+		fmt.Printf("Current routing node: %s\n", currentNodeID)
 
-		// Find the neighbor closest to the target
+		// Find the neighbor closest to the target that isn't failed
 		var nextNodeID node.NodeID
 		minDistance := float64(10) // Any value larger than the maximum possible distance in our coordinate space
 
@@ -978,12 +1117,19 @@ func simulateRouting(requestType, key string, targetNodeID node.NodeID) []node.N
 				continue
 			}
 
+			// Skip failed nodes
+			if simulation.FailedNodes[nID] {
+				fmt.Printf("  Skipping failed neighbor: %s\n", nID)
+				continue
+			}
+
 			neighborNode := simulation.Nodes[nID]
 			if neighborNode == nil {
 				continue
 			}
 
 			dist, _ := node.DistanceToZone(point, neighbor.Zone)
+			fmt.Printf("  Neighbor %s distance: %f\n", nID, dist)
 			if dist < minDistance {
 				minDistance = dist
 				nextNodeID = nID
@@ -991,14 +1137,24 @@ func simulateRouting(requestType, key string, targetNodeID node.NodeID) []node.N
 		}
 
 		// If we can't find a better neighbor, break (this shouldn't happen in a proper CAN)
-		if nextNodeID == "" || len(path) > 10 { // Prevent infinite loops
+		if nextNodeID == "" {
+			fmt.Printf("No valid next hop found in routing, path may be incomplete\n")
 			break
 		}
 
 		// Add the next node to the path
+		fmt.Printf("  Selecting next hop: %s (distance: %f)\n", nextNodeID, minDistance)
 		path = append(path, nextNodeID)
 		currentNodeID = nextNodeID
+
+		// Prevent infinite loops
+		if len(path) > 10 {
+			fmt.Printf("Routing exceeded max path length (10), breaking\n")
+			break
+		}
 	}
+
+	fmt.Printf("Routing complete. Path: %v\n", path)
 
 	// Record the routing path
 	routingPath := RoutingPath{
@@ -1328,4 +1484,244 @@ func replicateKey(c *gin.Context) {
 	}())
 
 	c.JSON(http.StatusOK, responseData)
+}
+
+// failNode marks a node as failed and triggers data replication
+func failNode(c *gin.Context) {
+	nodeID := node.NodeID(c.Param("id"))
+
+	simulation.mu.Lock()
+	defer simulation.mu.Unlock()
+
+	fmt.Printf("\n===== FAILING NODE %s =====\n", nodeID)
+
+	if _, exists := simulation.Nodes[nodeID]; !exists {
+		fmt.Printf("Node %s not found\n", nodeID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+		return
+	}
+
+	// Check if node is already failed
+	if simulation.FailedNodes[nodeID] {
+		fmt.Printf("Node %s is already marked as failed\n", nodeID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Node is already failed"})
+		return
+	}
+
+	// Mark node as failed
+	fmt.Printf("Marking node %s as failed\n", nodeID)
+	simulation.FailedNodes[nodeID] = true
+
+	// Get list of keys that this node is responsible for (primary copies)
+	var primaryKeys []string
+	for mapKey, kv := range simulation.KeyValuePairs {
+		if kv.NodeID == nodeID && kv.IsPrimaryCopy {
+			primaryKeys = append(primaryKeys, mapKey)
+			fmt.Printf("Node %s is primary for key %s\n", nodeID, mapKey)
+		}
+	}
+	fmt.Printf("Node %s is primary for %d keys\n", nodeID, len(primaryKeys))
+
+	// Get list of keys where this node holds replicas
+	var replicaKeys []string
+	for mapKey, kv := range simulation.KeyValuePairs {
+		if kv.NodeID == nodeID && !kv.IsPrimaryCopy {
+			replicaKeys = append(replicaKeys, mapKey)
+			fmt.Printf("Node %s holds replica for %s\n", nodeID, kv.Key)
+		}
+	}
+	fmt.Printf("Node %s holds %d replicas\n", nodeID, len(replicaKeys))
+
+	// Trigger data replication for the failed node
+	replicateDataFromFailedNode(nodeID)
+
+	fmt.Printf("===== NODE %s FAILED =====\n\n", nodeID)
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": fmt.Sprintf("Node %s marked as failed", nodeID)})
+}
+
+// recoverNode recovers a failed node
+func recoverNode(c *gin.Context) {
+	nodeID := node.NodeID(c.Param("id"))
+
+	simulation.mu.Lock()
+	defer simulation.mu.Unlock()
+
+	fmt.Printf("\n===== RECOVERING NODE %s =====\n", nodeID)
+
+	if _, exists := simulation.Nodes[nodeID]; !exists {
+		fmt.Printf("Node %s not found\n", nodeID)
+		c.JSON(http.StatusNotFound, gin.H{"error": "Node not found"})
+		return
+	}
+
+	// Check if node is actually failed
+	if !simulation.FailedNodes[nodeID] {
+		fmt.Printf("Node %s is not failed, nothing to recover\n", nodeID)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Node is not failed"})
+		return
+	}
+
+	// Mark node as recovered
+	fmt.Printf("Marking node %s as recovered\n", nodeID)
+	delete(simulation.FailedNodes, nodeID)
+
+	// Verify that node is no longer marked as failed
+	fmt.Printf("Node %s failed status after recovery: %v\n", nodeID, simulation.FailedNodes[nodeID])
+
+	// Restore data back to the recovered node
+	restoreDataToRecoveredNode(nodeID)
+
+	fmt.Printf("===== NODE %s RECOVERED =====\n\n", nodeID)
+
+	c.JSON(http.StatusOK, gin.H{"status": "success", "message": fmt.Sprintf("Node %s has recovered", nodeID)})
+}
+
+// replicateDataFromFailedNode handles data replication from a failed node
+func replicateDataFromFailedNode(failedNodeID node.NodeID) {
+	// Get all keys that belong to the failed node
+	var keysWithoutReplicas []string
+
+	// First identify all primary keys on the failed node
+	for key, kvInfo := range simulation.KeyValuePairs {
+		if kvInfo.NodeID == failedNodeID && kvInfo.IsPrimaryCopy {
+			// Check if this key already has replicas
+			if len(kvInfo.ReplicaNodes) == 0 {
+				// This is a key without replicas
+				keysWithoutReplicas = append(keysWithoutReplicas, key)
+				fmt.Printf("Key %s on failed node %s has no replicas. It will be inaccessible.\n",
+					key, failedNodeID)
+			} else {
+				// This key has replicas - check if any replicas are on healthy nodes
+				hasHealthyReplica := false
+				for _, replicaNodeID := range kvInfo.ReplicaNodes {
+					if !simulation.FailedNodes[replicaNodeID] {
+						hasHealthyReplica = true
+						fmt.Printf("Key %s has a healthy replica on node %s\n",
+							key, replicaNodeID)
+						break
+					}
+				}
+
+				if !hasHealthyReplica {
+					fmt.Printf("Key %s has replicas, but all replica nodes are also failed\n", key)
+					keysWithoutReplicas = append(keysWithoutReplicas, key)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("Found %d keys on failed node %s that will be inaccessible (no healthy replicas)\n",
+		len(keysWithoutReplicas), failedNodeID)
+
+	// DO NOT create new replicas - this would defeat the purpose of explicit replication
+	// for fault tolerance demonstration
+
+	// Instead, just log that these keys will be inaccessible
+	if len(keysWithoutReplicas) > 0 {
+		fmt.Printf("The following keys will be inaccessible until node %s recovers:\n", failedNodeID)
+		for _, key := range keysWithoutReplicas {
+			fmt.Printf("  - %s\n", key)
+		}
+		fmt.Printf("Use explicit replication before failing nodes to maintain data availability\n")
+	}
+}
+
+// restoreDataToRecoveredNode restores data to a recovered node
+func restoreDataToRecoveredNode(recoveredNodeID node.NodeID) {
+	fmt.Printf("Restoring data to recovered node %s\n", recoveredNodeID)
+
+	// Track keys that need to be restored
+	restoredKeys := 0
+
+	// 1. First restore primary keys that belong to this node
+	for key, kvInfo := range simulation.KeyValuePairs {
+		if kvInfo.NodeID == recoveredNodeID && kvInfo.IsPrimaryCopy {
+			// Check if the key exists in the node's data
+			if _, exists := simulation.Nodes[recoveredNodeID].Data[key]; !exists {
+				// Key doesn't exist in node data, restore it
+				simulation.Nodes[recoveredNodeID].Data[key] = kvInfo.Value
+				restoredKeys++
+				fmt.Printf("Restored primary key %s to recovered node %s\n", key, recoveredNodeID)
+			}
+		}
+	}
+
+	// 2. Restore replica keys that should be on this node
+	// Check all primary key entries to see which ones have this node as a replica
+	for key, kvInfo := range simulation.KeyValuePairs {
+		if !kvInfo.IsPrimaryCopy {
+			continue // Skip non-primary entries
+		}
+
+		// Check if this node is listed as a replica for this key
+		isReplica := false
+		for _, replicaNodeID := range kvInfo.ReplicaNodes {
+			if replicaNodeID == recoveredNodeID {
+				isReplica = true
+				break
+			}
+		}
+
+		if isReplica {
+			// This node should have a replica of this key
+			if _, exists := simulation.Nodes[recoveredNodeID].Data[key]; !exists {
+				// Replica doesn't exist in node data, restore it
+				simulation.Nodes[recoveredNodeID].Data[key] = kvInfo.Value
+				restoredKeys++
+				fmt.Printf("Restored replica key %s to recovered node %s\n", key, recoveredNodeID)
+			}
+		}
+	}
+
+	// Find any missing replica entries in the KeyValuePairs map and recreate them
+	for key, kvInfo := range simulation.KeyValuePairs {
+		if !kvInfo.IsPrimaryCopy {
+			continue // Skip non-primary entries
+		}
+
+		// Check if this node is listed as a replica but doesn't have a replica entry
+		for _, replicaNodeID := range kvInfo.ReplicaNodes {
+			if replicaNodeID == recoveredNodeID {
+				// Check if we have a replica entry for this in KeyValuePairs
+				hasReplicaEntry := false
+				for checkKey, replicaInfo := range simulation.KeyValuePairs {
+					if !replicaInfo.IsPrimaryCopy && replicaInfo.Key == key && replicaInfo.NodeID == recoveredNodeID {
+						hasReplicaEntry = true
+						fmt.Printf("Found existing replica entry at key %s\n", checkKey)
+						break
+					}
+				}
+
+				if !hasReplicaEntry {
+					// We need to create a replica entry
+					replicaMapKey := fmt.Sprintf("%s_replica_%s", key, recoveredNodeID)
+
+					// Get center point of the replica's node zone
+					recoveredNode := simulation.Nodes[recoveredNodeID]
+					zoneCenter := node.Point{
+						(recoveredNode.Zone.MinPoint[0] + recoveredNode.Zone.MaxPoint[0]) / 2,
+						(recoveredNode.Zone.MinPoint[1] + recoveredNode.Zone.MaxPoint[1]) / 2,
+					}
+
+					// Create the replica entry
+					replicaInfo := KeyValueInfo{
+						Key:           key,
+						Value:         kvInfo.Value,
+						Point:         zoneCenter,
+						NodeID:        recoveredNodeID,
+						Color:         kvInfo.Color,
+						Encrypted:     kvInfo.Encrypted,
+						ReplicaNodes:  nil,
+						IsPrimaryCopy: false,
+					}
+
+					simulation.KeyValuePairs[replicaMapKey] = replicaInfo
+					fmt.Printf("Recreated replica entry for key %s on node %s\n", key, recoveredNodeID)
+				}
+			}
+		}
+	}
+
+	fmt.Printf("Data restoration complete for node %s: restored %d keys\n", recoveredNodeID, restoredKeys)
 }

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ .title }}</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+</head>
+<body>
+    <h1>CAN DHT Visualization</h1>
+    
+    <div class="control-panel">
+        <h2>Node Controls</h2>
+        <div class="node-controls">
+            <select id="nodeSelect">
+                <option value="">Select a node...</option>
+            </select>
+            <button id="failNode" class="control-btn fail">Fail Node</button>
+            <button id="recoverNode" class="control-btn recover">Recover Node</button>
+        </div>
+    </div>
+
+    <div id="visualization"></div>
+
+    <script src="/static/js/visualizer.js"></script>
+</body>
+</html> 
