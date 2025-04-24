@@ -166,11 +166,24 @@ type RepairClient interface {
 
 // NewPeriodicChecker creates a new periodic integrity checker
 func NewPeriodicChecker(store *storage.Store, keyManager *crypto.KeyManager, interval time.Duration) *PeriodicChecker {
-	// Create a backup store in the same directory as the main store
-	backupPath := store.Path + "_backup"
-	backupStore, err := storage.NewStore(backupPath)
-	if err != nil {
-		log.Printf("Warning: Failed to create backup store at %s: %v", backupPath, err)
+	var backupStore *storage.Store
+	var err error
+	
+	// Create a backup store if the main store exists
+	if store != nil {
+		backupPath := store.Path + "_backup"
+		backupOptions := &storage.StoreOptions{
+			DataDir:     backupPath,
+			BucketName:  storage.DefaultBucketName,
+			EnableCache: true,
+			CacheSize:   1000,
+			CacheTTL:    time.Hour,
+		}
+		
+		backupStore, err = storage.NewStore(backupOptions)
+		if err != nil {
+			log.Printf("Warning: Failed to create backup store at %s: %v", backupPath, err)
+		}
 	}
 
 	return &PeriodicChecker{
@@ -490,14 +503,21 @@ func (p *PeriodicChecker) verifyDataFromPeer(key string, data []byte) bool {
 func (p *PeriodicChecker) CheckDataIntegrity(key string) *CheckResult {
 	result := &CheckResult{
 		Key:       key,
+		Status:    StatusOK,
 		CheckTime: time.Now(),
 	}
 
-	// Get the data from the store
-	data, err := p.Store.Get(key)
+	// Get the stored value
+	data, exists, err := p.Store.Get(key)
 	if err != nil {
-		result.Status = StatusMissing
+		result.Status = StatusError
 		result.Error = fmt.Errorf("failed to get data: %w", err)
+		return result
+	}
+	
+	if !exists {
+		result.Status = StatusNotFound
+		result.Error = fmt.Errorf("key not found")
 		return result
 	}
 

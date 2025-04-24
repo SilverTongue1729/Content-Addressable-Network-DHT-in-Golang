@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -134,7 +135,7 @@ func (m *TLSManager) createCA(keyPath, certPath string) error {
 // loadCA loads an existing Certificate Authority
 func (m *TLSManager) loadCA(keyPath, certPath string) error {
 	// Load CA key
-	keyBytes, err := os.ReadFile(keyPath)
+	keyBytes, err := ioutil.ReadFile(keyPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA key file: %w", err)
 	}
@@ -151,7 +152,7 @@ func (m *TLSManager) loadCA(keyPath, certPath string) error {
 	m.CAKey = caKey
 
 	// Load CA certificate
-	certBytes, err := os.ReadFile(certPath)
+	certBytes, err := ioutil.ReadFile(certPath)
 	if err != nil {
 		return fmt.Errorf("failed to read CA certificate file: %w", err)
 	}

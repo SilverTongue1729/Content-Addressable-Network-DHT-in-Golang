@@ -45,16 +45,24 @@ build-test-client:
 	@mkdir -p $(BINARY_DIR)
 	@$(GO) build -o $(TEST_CLIENT_BINARY) ./cmd/test-client
 
-# Build all binaries in cmd directory
-.PHONY: build-all
-build-all: proto
-	@echo "Building all binaries..."
+# Add build target for can-cli after build-test-client
+.PHONY: build-can-cli
+build-can-cli:
+	@echo "Building can-cli..."
 	@mkdir -p $(BINARY_DIR)
-	@for dir in $(shell find cmd -maxdepth 1 -mindepth 1 -type d); do \
-		binary_name=$$(basename $$dir); \
-		echo "Building $$binary_name..."; \
-		$(GO) build -o $(BINARY_DIR)/$$binary_name ./$$dir; \
-	done
+	@$(GO) build -o $(BINARY_DIR)/can-cli ./cmd/can-cli
+
+# Update build-all target to explicitly list all the binaries
+.PHONY: build-all
+build-all: proto build-node build-test-client build-can-cli
+	@echo "Building additional utility binaries..."
+	@mkdir -p $(BINARY_DIR)
+	@$(GO) build -o $(BINARY_DIR)/cache-demo ./cmd/cache-demo
+	@$(GO) build -o $(BINARY_DIR)/enhanced-auth-demo ./cmd/enhanced-auth-demo
+	@$(GO) build -o $(BINARY_DIR)/integrity-demo ./cmd/integrity-demo
+	@$(GO) build -o $(BINARY_DIR)/routing-demo ./cmd/routing-demo
+	@$(GO) build -o $(BINARY_DIR)/security-demo ./cmd/security-demo
+	@$(GO) build -o $(BINARY_DIR)/visualization ./cmd/visualization
 
 # Test targets
 .PHONY: test
@@ -118,6 +126,23 @@ clean-proto:
 deps:
 	@echo "Fetching dependencies..."
 	@$(GO) mod tidy
+	@echo "Installing protoc-gen-go and protoc-gen-go-grpc..."
+	@$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+	@$(GO) install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+	@echo "All dependencies installed successfully"
+
+# Add a new target to build core binaries without proto generation
+.PHONY: build-core
+build-core:
+	@echo "Building core binaries (without proto generation)..."
+	@mkdir -p $(BINARY_DIR)
+	@echo "Building node binary..."
+	@$(GO) build -o $(BINARY_DIR)/can-node ./cmd/node
+	@echo "Building test client..."
+	@$(GO) build -o $(BINARY_DIR)/test-client ./cmd/test-client
+	@echo "Building can-cli..."
+	@$(GO) build -o $(BINARY_DIR)/can-cli ./cmd/can-cli
+	@echo "Core binaries built successfully!"
 
 # Help target
 .PHONY: help
@@ -128,10 +153,12 @@ help:
 	@echo "Available targets:"
 	@echo "  all            : Build all binaries (default target)"
 	@echo "  build          : Build node and test client binaries"
+	@echo "  build-core     : Build only core binaries without proto generation"
 	@echo "  proto          : Generate code from proto files"
 	@echo "  proto-script   : Generate code from proto files using generate.sh script"
 	@echo "  build-node     : Build only the node binary"
 	@echo "  build-test-client : Build only the test client binary"
+	@echo "  build-can-cli  : Build only the can-cli binary"
 	@echo "  build-all      : Build all binaries found in cmd directory"
 	@echo "  test           : Run the test client"
 	@echo "  test-node      : Run tests for the node package"

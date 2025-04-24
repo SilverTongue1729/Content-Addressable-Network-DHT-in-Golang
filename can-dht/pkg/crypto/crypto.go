@@ -8,7 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"errors"
+	// Remove unused import
+	// "errors"
 	"fmt"
 	"io"
 	"strings"
@@ -145,6 +146,13 @@ func (km *KeyManager) CheckAndRotateKeys() error {
 	}
 	
 	return nil
+}
+
+// GetIntegrityKey returns the current HMAC key for integrity verification
+func (km *KeyManager) GetIntegrityKey() []byte {
+	km.RotationMutex.RLock()
+	defer km.RotationMutex.RUnlock()
+	return km.HMACKey
 }
 
 // EncryptWithAESGCM encrypts data using AES-GCM

@@ -3,7 +3,8 @@ package storage
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	// Properly comment out unused import
+	// "log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -66,6 +67,9 @@ type Store struct {
 	// CacheKeys maintains the order of cache keys for LRU eviction
 	CacheKeys []string
 
+	// Path to the database file
+	Path string
+
 	mu sync.RWMutex
 }
 
@@ -96,6 +100,7 @@ func NewStore(options *StoreOptions) (*Store, error) {
 	store := &Store{
 		DB:      db,
 		Options: options,
+		Path:    options.DataDir, // Set the Path field
 	}
 
 	// Initialize cache if enabled
